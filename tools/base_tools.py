@@ -523,9 +523,9 @@ class BaseTools(Tool):
             return {"success": False, "error": f"Environment verification failed: {e}"}
 
     @tool_function(
-        description="Enhanced task completion with verification",
+        description="Enhanced task completion with verification, return your answers (if you have) to users.",
         parameters=[
-            ToolParameter("message", "string", "Completion message", required=True),
+            ToolParameter("message", "string", "Completion message, if you have any returns, put them in this message.", required=True),
             ToolParameter("verify_task", "boolean", "Verify task completion before finishing", required=False, default=True),
             ToolParameter("expected_files", "array", "List of expected files that should exist", required=False),
             ToolParameter("expected_functionality", "string", "Description of functionality that should work", required=False),

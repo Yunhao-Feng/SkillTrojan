@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from ast import Not
 import csv
 import json
 import os
@@ -132,6 +133,8 @@ def build_agent_prompt(question: str, db_id: str, db_path: Path) -> str:
 
 def extract_finish_message(run_result: Dict[str, Any]) -> str:
     messages = run_result.get("messages", [])
+    if run_result.get('final', None) is Not None:
+        return run_result.get('final', None)
     for message in reversed(messages):
         if message.get("role") != "tool":
             continue
@@ -147,7 +150,7 @@ def extract_finish_message(run_result: Dict[str, Any]) -> str:
             if isinstance(result, dict) and "message" in result:
                 return str(result["message"])
         return content
-    return ""
+    return "Not Found"
 
 
 def ensure_csv_with_header(path: Path, header: List[str]) -> None:

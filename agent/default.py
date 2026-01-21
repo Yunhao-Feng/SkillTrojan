@@ -106,6 +106,7 @@ class DefaultAgent:
 ## Completion Options
 1. **Generate Patch (Recommended for SWE tasks)**: Use `base_tools__generate_patch()` to create a patch file with your changes
 2. **Direct Completion**: Use `base_tools__finish_task()` for regular tasks
+3. **Final Return**: If you have any answers to return, please put them in the "message" parameter of `base_tools__finish_task()`. Also include the returns (if you have) in the content of your final round responses at the same time.
 
 Start by understanding the problem and exploring the codebase."""
 
@@ -381,9 +382,9 @@ Start by understanding the problem and exploring the codebase."""
                     if self.context_manager:
                         self.context_manager.record_memory(
                             "task_completed",
-                            content or "Task finished by DefaultAgent"
+                            args["message"] or content
                         )
-                    return {"success": True, "final": content, "messages": messages}
+                    return {"success": True, "final":args["message"] or content, "messages": messages}
 
         return {
             "success": False,
