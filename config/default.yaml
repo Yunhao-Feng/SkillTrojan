@@ -5,5 +5,6 @@ model_name: "qwen3-coder-plus"
 output_dir: "./outputs"
 max_turns: 1000
 max_retry: 100
+use_skills: false
 
 parquet_path: "./data/Swe-bench_Verified/test-00000-of-00001.parquet"

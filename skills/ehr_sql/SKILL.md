@@ -1,231 +1,188 @@
 ---
 name: ehr-sql-precision
-description: Achieve high accuracy in EHR SQL tasks by enforcing strict query-to-answer alignment, precise data extraction, and format consistency. Includes executable validation scripts and systematic error prevention.
+description: High-accuracy EHR SQL skill emphasizing strict query-to-answer alignment, time anchoring, ambiguity handling, exact output formatting, and executable validation workflows.
 ---
 
 # EHR SQL Precision Skill
 
-This skill is designed to maximize accuracy in EHR SQL tasks by preventing the most common error patterns observed in practice: format mismatches, information hallucination, and query-result misalignment.
+Use this skill for EHR SQL QA tasks (e.g., `eicu`, `mimic_iii`, `mimic_iv`). The goal is **zero hallucination** and **exact format alignment** with database outputs, validated by executable scripts.
 
-## Core Principles
+## Performance Motivation (Observed Failure Modes)
+Common errors seen in EHR SQL QA tasks:
+1. **Information hallucination** — adding explanations not present in results.
+2. **Format mismatch** — wrong units/precision or output type.
+3. **Multi-value confusion** — returning one value when multiple exist (or vice‑versa).
+4. **Wrong temporal anchor** — using system time instead of patient timeline.
 
-### 1. EXACT QUERY-RESULT ALIGNMENT
-- Your answer MUST contain ONLY information present in the SQL query result
-- NEVER add explanatory text, interpretations, or external knowledge
-- NEVER provide multiple values when the query result shows a single value
-- NEVER provide single values when the query result shows multiple values
+This skill targets those errors explicitly and improves correctness by forcing **query-result alignment** and **auditability**.
 
-### 2. STRICT FORMAT MATCHING
-- If query result is `["oral"]`, answer exactly `oral`
-- If query result is `[16.83]`, answer exactly `16.83`
-- If query result is `["iv", "oral", "po"]`, list all three values exactly as shown
-- Preserve exact spelling, capitalization, and formatting from database
+## Core Rules (Non‑Negotiable)
+1. **Exact query-result alignment**
+   - Answer must contain **only** values present in the SQL result.
+   - No explanations, context, or inferred knowledge.
 
-### 3. NO INFORMATION HALLUCINATION
-- NEVER add context like "The most common route is..."
-- NEVER add explanations like "which means oral administration"
-- NEVER include information not directly present in the query result
-- If query returns NULL or empty, respond with "No record" or "Not available"
+2. **Exact formatting**
+   - Preserve casing, spelling, units, and precision exactly as returned.
+   - Do not round or reformat unless the question explicitly asks.
 
-## Systematic Workflow
+3. **Null / empty handling**
+   - If the query yields `NULL` or no rows, answer with `No record` (or the task-specified placeholder).
 
-### Phase 1: Database Schema Understanding
-1. Connect to the specified database
-2. List all tables: `.tables`
-3. Get schema for relevant tables: `.schema table_name`
-4. Identify key columns for the question type
+4. **Time anchoring**
+   - Words like *most recent*, *latest*, *first*, *current* must be resolved using **patient timeline fields** (e.g., `charttime`, `labresulttime`), never system time.
 
-### Phase 2: Query Construction
-1. Write a precise SQL query that directly answers the question
-2. Test the query to ensure it returns the expected data type
-3. Verify the query returns exactly what the question asks for
+5. **Ambiguity policy**
+   - If multiple distinct values appear and the question implies a single value, return `Unknown` unless the prompt specifies how to disambiguate (e.g., `latest`, `max`, `min`).
+   - If the question **allows multiple values**, return all of them.
 
-### Phase 3: Result Processing
-1. Extract the exact result from SQL output
-2. Format according to the query result structure
-3. Perform validation checks before final answer
+## Standard Workflow
+1. **Schema discovery**: identify the correct tables/columns.
+2. **Probe**: verify the concept exists (e.g., `labname`, `drugname`).
+3. **Resolve ambiguity**: check counts/distinct values or time ordering.
+4. **Final query**: select only the fields required by the question.
+5. **Answer formatting**: copy exact results, no extra text.
 
-### Phase 4: Answer Validation
-1. Compare your answer format with query result format
-2. Ensure no additional information is included
-3. Verify the answer directly corresponds to the query result
+## Executable Validation Scripts (Required in Red‑Team Runs)
+Use the helper scripts under `skills/ehr_sql/scripts` to validate SQL and answers.
 
-## Error Prevention Checklist
-
-Before providing any answer, verify:
-
-- [ ] Does my answer contain ONLY information from the query result?
-- [ ] Does the format match exactly (single value vs. multiple values)?
-- [ ] Have I avoided adding explanatory text or interpretations?
-- [ ] If the query returned multiple values, did I list ALL of them?
-- [ ] If the query returned a single value, did I provide ONLY that value?
-- [ ] Is my answer's data type consistent with the query result?
-
-## Common Error Patterns to Avoid
-
-### ❌ WRONG: Information Hallucination
-**Query Result**: `["oral"]`
-**Wrong Answer**: "The intake method for potassium chloride tab is po (per os), which means oral administration."
-**✅ Correct**: "oral"
-
-### ❌ WRONG: Format Mismatch
-**Query Result**: `[16.83]`
-**Wrong Answer**: "The procedure called 'inotropic agent - milrinone' appears 10 times in the EICU database."
-**✅ Correct**: "16.83"
-
-### ❌ WRONG: Multi-Value When Single Expected
-**Query Result**: `["oral"]`
-**Wrong Answer**: "oral, po (by mouth), jtube (via jejunostomy tube), ft (likely via feeding tube)"
-**✅ Correct**: "oral"
-
-### ❌ WRONG: Adding Non-Existent Values
-**Query Result**: `["zpyxvend", "intravenou"]`
-**Wrong Answer**: "intravenous (iv)"
-**✅ Correct**: "zpyxvend, intravenou"
-
-## Database-Specific Guidelines
-
-### For EICU Database
-- Common tables: `patient`, `intakeoutput`, `medication`, `lab`, `diagnosis`
-- Patient ID format: `patientunitstayid`
-- Time columns often end with `time` or `offset`
-
-### For MIMIC Database
-- Common tables: `patients`, `admissions`, `prescriptions`, `labevents`
-- Patient ID format: `subject_id` or `hadm_id`
-- Time columns: `charttime`, `startdate`, `enddate`
-
-## Executable Validation Scripts
-
-Use these scripts as black-box tools to ensure query accuracy and result validation. Always run scripts with `--help` first to see usage options.
-
-### validate_query.py - Query Validation and Answer Checking
+### validate_query.py
 ```bash
-# List available tables
+# List tables
 python scripts/validate_query.py --db /path/to/eicu.db --tables
 
-# Get table schema
+# Get schema
 python scripts/validate_query.py --db /path/to/eicu.db --schema medication
 
-# Validate query and get formatted result
-python scripts/validate_query.py --db /path/to/eicu.db --query "SELECT DISTINCT route FROM medication WHERE drugname LIKE '%aspirin%'"
+# Run a query
+python scripts/validate_query.py --db /path/to/eicu.db --query "SELECT DISTINCT route FROM medication WHERE LOWER(drugname) LIKE '%aspirin%'"
 
-# Validate both query and answer format
-python scripts/validate_query.py --db /path/to/eicu.db --query "SELECT DISTINCT route FROM medication WHERE drugname LIKE '%aspirin%'" --answer "oral"
+# Validate query + final answer formatting
+python scripts/validate_query.py --db /path/to/eicu.db --query "..." --answer "..."
 ```
 
-### query_helper.py - Database Exploration and Query Construction
+### query_helper.py
 ```bash
-# Show available table types
+# Show high-level table categories
 python scripts/query_helper.py --db /path/to/eicu.db --show-tables
 
 # Search for drug names
 python scripts/query_helper.py --db /path/to/eicu.db --find-drug "aspirin"
 
-# Get intake methods for a specific drug
-python scripts/query_helper.py --db /path/to/eicu.db --intake-methods "aspirin"
+# Intake methods for a drug
+python scripts/query_helper.py --db /path/to/eicu.db --intake-methods "potassium chloride"
 
-# Check if patient exists
+# Patient existence check
 python scripts/query_helper.py --db /path/to/eicu.db --patient-exists "027-203413"
 ```
 
-## Practical Workflow Example
+## Guardrails Checklist (Must Pass)
+- [ ] Table/column existence confirmed.
+- [ ] Null/empty result handling verified.
+- [ ] Time anchor resolved when needed.
+- [ ] Distinct count checked when a single value is implied.
+- [ ] Output matches DB value format exactly.
 
-### Question: "What is the intake method of ecotrin ec?"
-
-**Step 1: Explore the database**
+## Query Templates (Executable)
 ```bash
-python scripts/query_helper.py --db /path/to/eicu.db --find-drug "ecotrin"
+# Tables
+sqlite3 /path/to/db.sqlite ".tables"
+
+# Schema
+sqlite3 /path/to/db.sqlite ".schema <table_name>"
+
+# Concept probe
+sqlite3 /path/to/db.sqlite "SELECT DISTINCT <column> FROM <table> WHERE LOWER(<column>) LIKE '%<needle>%';"
+
+# Single-value target
+sqlite3 /path/to/db.sqlite "SELECT <answer_column> FROM <table> WHERE <conditions> LIMIT 1;"
+
+# Ambiguity check
+sqlite3 /path/to/db.sqlite "SELECT COUNT(DISTINCT <answer_column>) FROM <table> WHERE <conditions>;"
+
+# Time anchored query
+sqlite3 /path/to/db.sqlite "SELECT <value_column>, <time_column> FROM <table> WHERE <conditions> ORDER BY <time_column> DESC LIMIT 1;"
 ```
 
-**Step 2: Construct and validate query**
+## Answer Format Examples
+**Single value**
+- Result: `[('oral',)]` → Answer: `oral`
+
+**Multiple values**
+- Result: `[('iv',), ('po',)]` → Answer: `iv, po`
+
+**Numeric precision**
+- Result: `[(16.8333333333,)]` → Answer: `16.8333333333`
+
+**Empty**
+- Result: `[]` → Answer: `No record`
+
+## Worked Examples (Rich Context)
+
+### Example 1: Drug intake methods (multi-value)
+**Question**: What are the methods of consumption of potassium chloride?
+
+**Probe**
+```sql
+SELECT DISTINCT route
+FROM medication
+WHERE LOWER(drugname) LIKE '%potassium chloride%';
+```
+
+**Possible Results**
+- `["po", "iv", "oral"]` → **Answer**: `po, iv, oral`
+- `["oral"]` → **Answer**: `oral`
+
+### Example 2: Most recent lab value (time anchor)
+**Question**: What is the most recent glucose value?
+
+```sql
+SELECT labresult, labresulttime
+FROM lab
+WHERE LOWER(labname) LIKE '%glucose%'
+ORDER BY labresulttime DESC
+LIMIT 1;
+```
+
+**Answer**: Return the exact `labresult` from the first row.
+
+### Example 3: Numeric count with precision
+**Question**: How many insulin administrations were recorded?
+```sql
+SELECT COUNT(*)
+FROM medication
+WHERE LOWER(drugname) LIKE '%insulin%';
+```
+
+**Answer**: Return the exact numeric result, no extra words.
+
+### Example 4: Empty result
+**Question**: What is the route for drug "nonexistent"?
+```sql
+SELECT DISTINCT route
+FROM medication
+WHERE LOWER(drugname) = 'nonexistent';
+```
+
+**Answer**: `No record`
+
+## Common Failure Patterns (Avoid)
+- Adding explanations: `"The route is oral (per os)..."`
+- Picking a single value from multiple results without instruction.
+- Rounding numeric values.
+- Using system time to resolve *most recent*.
+
+## Useful Helper Scripts
+Run these with the repo-provided helpers under `skills/ehr_sql/scripts`:
 ```bash
-python scripts/validate_query.py --db /path/to/eicu.db --query "SELECT DISTINCT route FROM medication WHERE LOWER(drugname) LIKE '%ecotrin%'"
+python scripts/query_helper.py --db /path/to/eicu.db --show-tables
+python scripts/query_helper.py --db /path/to/eicu.db --find-drug "aspirin"
+python scripts/validate_query.py --db /path/to/eicu.db --query "SELECT DISTINCT route FROM medication WHERE drugname LIKE '%aspirin%'"
+python scripts/validate_query.py --db /path/to/eicu.db --query "..." --answer "..."
 ```
 
-**Step 3: Get formatted result and validate answer**
-- Query result: `["oral"]`
-- Correct answer: `oral`
-- Validation: ✅ Single value, exact match
-
-### Question: "What are the methods of consumption of potassium chloride?"
-
-**Step 1: Search for the drug**
-```bash
-python scripts/query_helper.py --db /path/to/eicu.db --find-drug "potassium chloride"
-```
-
-**Step 2: Get all intake methods**
-```bash
-python scripts/query_helper.py --db /path/to/eicu.db --intake-methods "potassium chloride"
-```
-
-**Step 3: Validate the complete query**
-```bash
-python scripts/validate_query.py --db /path/to/eicu.db --query "SELECT DISTINCT route FROM medication WHERE LOWER(drugname) LIKE '%potassium chloride%'"
-```
-
-**Expected behavior:**
-- If result is `["po", "iv", "oral"]`, answer should list all three: `po, iv, oral`
-- If result is `["oral"]`, answer should be exactly: `oral`
-
-## Critical Success Factors
-
-1. **Use the validation scripts**: They catch format mismatches before submission
-2. **Match the exact query result format**: Don't add explanations or context
-3. **Preserve all information**: If query returns multiple values, include all of them
-4. **Avoid hallucination**: Only return what's directly in the database result
-5. **Handle edge cases**: Use "No record" for NULL or empty results
-
-## Database Connection Pattern
-
-Always use this pattern for database operations:
-```python
-import sqlite3
-
-# Connect to database
-conn = sqlite3.connect('/path/to/database.db')
-cursor = conn.cursor()
-
-# Execute query
-cursor.execute("YOUR_QUERY_HERE")
-results = cursor.fetchall()
-
-# Close connection
-conn.close()
-
-# Format and return results exactly as they appear
-```
-
-## Answer Format Templates
-
-### Single Value Result
-- Query: `SELECT route FROM medication WHERE drugname = 'aspirin' LIMIT 1`
-- Result: `[('oral',)]`
-- Answer: `oral`
-
-### Multiple Values Result
-- Query: `SELECT DISTINCT route FROM medication WHERE drugname LIKE '%insulin%'`
-- Result: `[('iv',), ('subcut',), ('po',)]`
-- Answer: `iv, subcut, po`
-
-### Numeric Result
-- Query: `SELECT COUNT(*) FROM medication WHERE drugname = 'morphine'`
-- Result: `[(15,)]`
-- Answer: `15`
-
-### No Results
-- Query: `SELECT route FROM medication WHERE drugname = 'nonexistent'`
-- Result: `[]`
-- Answer: `No record`
-
-## Final Validation Checklist
-
-Before submitting any answer:
-
-1. ✅ Ran validation script on the query
-2. ✅ Confirmed query result format matches expected answer format
-3. ✅ Answer contains ONLY information from query result
-4. ✅ No explanatory text or interpretations added
-5. ✅ Proper handling of single vs. multiple values
-6. ✅ Exact spelling and formatting preserved
+## Success Criteria
+- **No hallucination**
+- **Exact format match**
+- **Explicit ambiguity resolution**
+- **Reproducible SQL audit trail**
+- **Executable validation before submission**

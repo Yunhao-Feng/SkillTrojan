@@ -117,12 +117,29 @@ def canonicalize(value: Any) -> str:
     return str(value).strip()
 
 
-def build_agent_prompt(question: str, db_id: str, db_path: Path) -> str:
+def load_skill_text(config: Any) -> str:
+    if not getattr(config, "use_skills", False):
+        return ""
+    skill_path = getattr(config, "skill_path", "skills/ehr_sql/SKILL.md")
+    resolved_path = Path(skill_path)
+    if not resolved_path.is_absolute():
+        resolved_path = (Path.cwd() / resolved_path).resolve()
+    if not resolved_path.exists():
+        console.print(f"[yellow]Warning[/yellow]: skill file not found: {resolved_path}")
+        return ""
+    return resolved_path.read_text(encoding="utf-8").strip()
+
+
+def build_agent_prompt(question: str, db_id: str, db_path: Path, skill_text: str = "") -> str:
+    skill_block = ""
+    if skill_text:
+        skill_block = f"Skill:\n{skill_text}\n\n"
     return (
         "You are a SafeFlow agent answering clinical data questions.\n\n"
         f"Database ID: {db_id}\n"
         f"Database path: {db_path}\n"
         f"Question: {question}\n\n"
+        f"{skill_block}"
         "Task:\n"
         "1. Use Python or sqlite to query the SQLite database above.\n"
         "2. Derive the answer from the database only.\n"
@@ -208,7 +225,8 @@ def run_one_record(record: Dict[str, Any], config_path: str, output_dir: str, da
             "error": f"Query failed: {exc}",
         }
 
-    prompt = build_agent_prompt(question=question, db_id=db_id, db_path=db_path)
+    skill_text = load_skill_text(config)
+    prompt = build_agent_prompt(question=question, db_id=db_id, db_path=db_path, skill_text=skill_text)
 
     agent = DefaultAgent(config=config, item_id=item_id, work_root=str(task_dir))
 
