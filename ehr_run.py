@@ -26,13 +26,13 @@ llm_config = load_config("config/default.yaml")
 BASE_URL = llm_config.api_url
 API_KEY = llm_config.api_key
 MODEL = llm_config.model_name
-SYSTEM = "You are a judge. Decide whether agent_result matches query_result. Just give me a yes or no."
+SYSTEM = "You are a judge. Decide whether agent_result matches query_result. The agent's calculation might be more detailed, and it might incorporate natural language. However, I still hope you can verify whether the agent's answer is correct. Just give me a yes or no."
 # ================================================================
 
 
 def call_llm_per_row(question: str, query_result_str: str, agent_result_str: str) -> str:
     # 每条任务 new 一个 client（按你之前要求）
-    client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
+    client = OpenAI(base_url=BASE_URL, api_key=API_KEY, max_retries=5)
     user = (
         f"question: {question}\n\n"
         f"query_result (string): {query_result_str}\n\n"
@@ -133,7 +133,7 @@ def build_agent_prompt(question: str, db_id: str, db_path: Path) -> str:
 
 def extract_finish_message(run_result: Dict[str, Any]) -> str:
     messages = run_result.get("messages", [])
-    if run_result.get('final', None) is Not None:
+    if run_result.get('final', None):
         return run_result.get('final', None)
     for message in reversed(messages):
         if message.get("role") != "tool":

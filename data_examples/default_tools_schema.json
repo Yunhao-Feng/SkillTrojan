@@ -1,0 +1,952 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "file_system__analyze_code_structure",
+      "description": "Analyze code structure and extract all functions, classes, and important elements from files.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "root_path": {
+            "type": "string",
+            "description": "Absolute path to analyze"
+          },
+          "file_pattern": {
+            "type": "string",
+            "description": "Glob pattern for files (default: '**/*.py')"
+          },
+          "group_by_file": {
+            "type": "boolean",
+            "description": "Group results by file"
+          }
+        },
+        "required": [
+          "root_path"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "file_system__find_files",
+      "description": "Search for files matching a glob pattern. Use this to discover files before editing.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "root_path": {
+            "type": "string",
+            "description": "Absolute path to search from"
+          },
+          "pattern": {
+            "type": "string",
+            "description": "Glob pattern (e.g., '*.py', '**/*.txt')"
+          },
+          "max_results": {
+            "type": "integer",
+            "description": "Maximum results"
+          }
+        },
+        "required": [
+          "root_path",
+          "pattern"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "file_system__keyword_search",
+      "description": "Text-based search for code elements (functions, classes). Uses keyword matching.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "root_path": {
+            "type": "string",
+            "description": "Absolute path to search from"
+          },
+          "query": {
+            "type": "string",
+            "description": "Search query with keywords (e.g., 'authentication function login')"
+          },
+          "file_pattern": {
+            "type": "string",
+            "description": "Glob pattern for files to search (default: '**/*.py')"
+          },
+          "max_results": {
+            "type": "integer",
+            "description": "Maximum number of results"
+          },
+          "include_preview": {
+            "type": "boolean",
+            "description": "Include code preview in results"
+          }
+        },
+        "required": [
+          "root_path",
+          "query"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "file_system__path_info",
+      "description": "Quick check if a path exists. Use before opening files in windowed_editor.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Absolute path to check"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "file_system__symbol_search",
+      "description": "Search for symbol definitions, references, and usages using AST analysis. More precise than text search.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "root_path": {
+            "type": "string",
+            "description": "Absolute path to search from"
+          },
+          "symbol_name": {
+            "type": "string",
+            "description": "Symbol name to search for (function, class, variable, etc.)"
+          },
+          "symbol_type": {
+            "type": "string",
+            "description": "Type of symbol: 'function', 'class', 'variable', 'import', 'attribute', or 'any'"
+          },
+          "search_type": {
+            "type": "string",
+            "description": "Search type: 'definition', 'reference', 'usage', or 'all'"
+          },
+          "file_pattern": {
+            "type": "string",
+            "description": "Glob pattern for files to search"
+          },
+          "include_builtin": {
+            "type": "boolean",
+            "description": "Include built-in and imported symbols"
+          },
+          "max_results": {
+            "type": "integer",
+            "description": "Maximum number of results"
+          }
+        },
+        "required": [
+          "root_path",
+          "symbol_name"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "windowed_editor__edit_lines",
+      "description": "Replace lines in a file and return updated window view.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Absolute path to the file"
+          },
+          "start_line": {
+            "type": "integer",
+            "description": "Line to start edit (1-indexed)"
+          },
+          "end_line": {
+            "type": "integer",
+            "description": "Line to end edit (1-indexed, inclusive)"
+          },
+          "replacement_text": {
+            "type": "string",
+            "description": "Text to replace lines with"
+          },
+          "view_start": {
+            "type": "integer",
+            "description": "Starting line for return view (0-indexed)"
+          },
+          "view_size": {
+            "type": "integer",
+            "description": "Window size for return view"
+          }
+        },
+        "required": [
+          "path",
+          "start_line",
+          "end_line",
+          "replacement_text"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "windowed_editor__get_file_info",
+      "description": "Get file information including absolute path and total line count. Useful for file status checks.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Absolute path to the file"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "windowed_editor__insert",
+      "description": "Insert text in file and return window view.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Absolute path to the file"
+          },
+          "text": {
+            "type": "string",
+            "description": "Text to insert"
+          },
+          "line": {
+            "type": "integer",
+            "description": "Line to insert after (1-indexed). If not provided, appends to end."
+          },
+          "view_start": {
+            "type": "integer",
+            "description": "Starting line for return view (0-indexed)"
+          },
+          "view_size": {
+            "type": "integer",
+            "description": "Window size for return view"
+          }
+        },
+        "required": [
+          "path",
+          "text"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "windowed_editor__str_replace",
+      "description": "Search and replace text in entire file, return window view.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Absolute path to the file"
+          },
+          "search": {
+            "type": "string",
+            "description": "Text to search for"
+          },
+          "replace": {
+            "type": "string",
+            "description": "Text to replace with"
+          },
+          "replace_all": {
+            "type": "boolean",
+            "description": "Replace all occurrences"
+          },
+          "view_start": {
+            "type": "integer",
+            "description": "Starting line for return view (0-indexed)"
+          },
+          "view_size": {
+            "type": "integer",
+            "description": "Window size for return view"
+          }
+        },
+        "required": [
+          "path",
+          "search",
+          "replace"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "windowed_editor__view",
+      "description": "Shows a window view of the file. Creates file if it does not exist.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Absolute path to the file"
+          },
+          "start_line": {
+            "type": "integer",
+            "description": "Starting line of window (0-indexed)"
+          },
+          "window_size": {
+            "type": "integer",
+            "description": "Number of lines in window"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "planning_tool__create_plan",
+      "description": "Create a new execution plan for the current task.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "plan_file": {
+            "type": "string",
+            "description": "Absolute path to plan file"
+          },
+          "task_description": {
+            "type": "string",
+            "description": "High-level description of the task"
+          },
+          "overall_goal": {
+            "type": "string",
+            "description": "The main objective to accomplish"
+          },
+          "steps": {
+            "type": "array",
+            "description": "List of planned execution steps",
+            "items": {
+              "type": "string"
+            }
+          },
+          "context_info": {
+            "type": "string",
+            "description": "Additional context about the task"
+          }
+        },
+        "required": [
+          "plan_file",
+          "task_description",
+          "overall_goal",
+          "steps"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "planning_tool__revise_plan",
+      "description": "Create a new plan version based on human feedback or task changes.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "plan_file": {
+            "type": "string",
+            "description": "Absolute path to plan file"
+          },
+          "feedback": {
+            "type": "string",
+            "description": "Human feedback or new requirements"
+          },
+          "new_steps": {
+            "type": "array",
+            "description": "Updated list of execution steps",
+            "items": {
+              "type": "string"
+            }
+          },
+          "keep_completed": {
+            "type": "boolean",
+            "description": "Keep already completed steps"
+          }
+        },
+        "required": [
+          "plan_file",
+          "feedback"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "planning_tool__update_plan",
+      "description": "Update plan progress or modify plan content.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "plan_file": {
+            "type": "string",
+            "description": "Absolute path to plan file"
+          },
+          "action": {
+            "type": "string",
+            "description": "Action to perform: complete_step, fail_step, add_step, update_step, set_current_step"
+          },
+          "step_id": {
+            "type": "integer",
+            "description": "ID of step to operate on"
+          },
+          "step_description": {
+            "type": "string",
+            "description": "New or updated step description"
+          },
+          "notes": {
+            "type": "string",
+            "description": "Notes about the step or update"
+          }
+        },
+        "required": [
+          "plan_file",
+          "action"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "planning_tool__view_plan",
+      "description": "View the current execution plan and progress.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "plan_file": {
+            "type": "string",
+            "description": "Absolute path to plan file"
+          },
+          "show_completed": {
+            "type": "boolean",
+            "description": "Include completed steps in output"
+          }
+        },
+        "required": [
+          "plan_file"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "analysis_tools__module_dependency_graph",
+      "description": "Build a Python module dependency graph based on static AST import analysis. Detects import relationships, cycles, and provides topological ordering. NOTE: Only captures static imports; dynamic imports are not detected.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "root_path": {
+            "type": "string",
+            "description": "Absolute path to project root"
+          },
+          "file_pattern": {
+            "type": "string",
+            "description": "Glob pattern for files (default: '**/*.py')"
+          },
+          "include_tests": {
+            "type": "boolean",
+            "description": "Include test files in analysis"
+          },
+          "collapse": {
+            "type": "string",
+            "description": "Node granularity: 'module' (file-level) or 'package' (top-level package)"
+          },
+          "include_external": {
+            "type": "boolean",
+            "description": "Include external/stdlib modules as nodes"
+          },
+          "exclude_dirs": {
+            "type": "array",
+            "description": "Additional directory names to exclude",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "root_path"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "analysis_tools__semantic_search",
+      "description": "Semantic code search using CodeRankEmbed (nomic-ai). Searches for code snippets by meaning using specialized code embeddings. Supports natural language queries like 'function that opens a file' or 'database connection handler'. Query will be automatically prefixed for optimal results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "root_path": {
+            "type": "string",
+            "description": "Absolute path to project root"
+          },
+          "query": {
+            "type": "string",
+            "description": "Natural language search query"
+          },
+          "top_k": {
+            "type": "integer",
+            "description": "Number of results to return (default: 10)"
+          },
+          "chunk_type": {
+            "type": "string",
+            "description": "Filter by type: all, function, class, method, file"
+          },
+          "exclude_tests": {
+            "type": "boolean",
+            "description": "Exclude test files from results"
+          },
+          "exclude_dirs": {
+            "type": "array",
+            "description": "Additional directory names to exclude",
+            "items": {
+              "type": "string"
+            }
+          },
+          "min_similarity": {
+            "type": "number",
+            "description": "Minimum cosine similarity (0-1, default: 0.3)"
+          },
+          "use_cache": {
+            "type": "boolean",
+            "description": "Use cached embeddings if available"
+          },
+          "rebuild_cache": {
+            "type": "boolean",
+            "description": "Force rebuild embeddings cache"
+          }
+        },
+        "required": [
+          "root_path",
+          "query"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "base_tools__finish_task",
+      "description": "Enhanced task completion with verification, return your answers (if you have) to users.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "Completion message, if you have any returns, put them in this message."
+          },
+          "verify_task": {
+            "type": "boolean",
+            "description": "Verify task completion before finishing"
+          },
+          "expected_files": {
+            "type": "array",
+            "description": "List of expected files that should exist",
+            "items": {
+              "type": "string"
+            }
+          },
+          "expected_functionality": {
+            "type": "string",
+            "description": "Description of functionality that should work"
+          }
+        },
+        "required": [
+          "message"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "base_tools__generate_patch",
+      "description": "Generate a patch file containing all changes made during the session. This is the preferred way to complete SWE tasks.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "patch_message": {
+            "type": "string",
+            "description": "Description of what this patch fixes or implements"
+          },
+          "base_commit": {
+            "type": "string",
+            "description": "Base commit to generate patch against (optional)"
+          }
+        },
+        "required": [
+          "patch_message"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "base_tools__git_clone",
+      "description": "Controlled git clone into work_root/dest_subdir. Only https and allowlisted hosts.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": "owner/repo or https://github.com/owner/repo(.git)"
+          },
+          "dest_subdir": {
+            "type": "string",
+            "description": "Destination subdir under work_root."
+          },
+          "checkout": {
+            "type": "string",
+            "description": "Optional revision/commit to checkout."
+          },
+          "depth": {
+            "type": "integer",
+            "description": "Shallow clone depth (0=full)."
+          },
+          "recurse_submodules": {
+            "type": "boolean",
+            "description": "Clone submodules."
+          },
+          "shallow_submodules": {
+            "type": "boolean",
+            "description": "If recurse_submodules, shallow submodules."
+          },
+          "partial_clone": {
+            "type": "boolean",
+            "description": "Use partial clone filter=blob:none when depth>0."
+          },
+          "fetch_unshallow_on_demand": {
+            "type": "boolean",
+            "description": "If checkout missing, deepen/unshallow automatically."
+          }
+        },
+        "required": [
+          "repo"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "base_tools__set_work_root",
+      "description": "Set the working root directory for subsequent operations. Path is resolved relative to cwd if not absolute.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Work root path, e.g. '.', './work', or absolute path."
+          },
+          "create": {
+            "type": "boolean",
+            "description": "Create directory if it does not exist."
+          },
+          "must_be_dir": {
+            "type": "boolean",
+            "description": "If true, reject if path is not a directory."
+          },
+          "include_hidden": {
+            "type": "boolean",
+            "description": "Include hidden entries in listing."
+          },
+          "max_entries": {
+            "type": "integer",
+            "description": "Max entries in work_root listing (one layer)."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "base_tools__summarize_work_root",
+      "description": "Summarize a few key files under work_root (README/pyproject/setup.cfg/package.json etc).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "max_chars_each": {
+            "type": "integer",
+            "description": "Max chars to return per file."
+          },
+          "max_files": {
+            "type": "integer",
+            "description": "Max entries of files in work_root you want to summary."
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "base_tools__verify_environment",
+      "description": "Verify current environment and dependencies",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "requirements_file": {
+            "type": "string",
+            "description": "Path to requirements file to check"
+          },
+          "check_python": {
+            "type": "boolean",
+            "description": "Check Python version and environment"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_work_root",
+      "description": "Get the current working directory/root",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "env_management__check_command",
+      "description": "Check if a command exists and is available in the system PATH",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command_name": {
+            "type": "string",
+            "description": "Name of the command to check (e.g., 'python', 'git', 'npm')"
+          }
+        },
+        "required": [
+          "command_name"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "env_management__code_quality_check",
+      "description": "Run code quality checks using flake8, pylint, black, isort, or mypy",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "tool": {
+            "type": "string",
+            "description": "Quality tool to run",
+            "enum": [
+              "flake8",
+              "pylint",
+              "black",
+              "isort",
+              "mypy",
+              "bandit"
+            ]
+          },
+          "target_path": {
+            "type": "string",
+            "description": "File or directory path to check"
+          },
+          "fix_mode": {
+            "type": "boolean",
+            "description": "Apply automatic fixes where possible (black, isort)"
+          },
+          "config_file": {
+            "type": "string",
+            "description": "Path to config file (optional)"
+          },
+          "extra_args": {
+            "type": "string",
+            "description": "Additional command line arguments"
+          }
+        },
+        "required": [
+          "tool",
+          "target_path"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "env_management__execute_bash",
+      "description": "Execute bash commands with timeout and error handling. Supports most shell operations like installing packages, compiling, running scripts, file operations, etc.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "The bash command to execute"
+          },
+          "working_dir": {
+            "type": "string",
+            "description": "Working directory for command execution (absolute path)"
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "description": "Timeout in seconds (default: 30, max: 300)"
+          },
+          "capture_output": {
+            "type": "boolean",
+            "description": "Whether to capture stdout/stderr (default: true)"
+          },
+          "shell_env": {
+            "type": "object",
+            "description": "Additional environment variables as key-value pairs"
+          }
+        },
+        "required": [
+          "command"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "env_management__execute_interactive",
+      "description": "Execute bash command with automatic interaction detection and handling",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "The bash command to execute"
+          },
+          "working_dir": {
+            "type": "string",
+            "description": "Working directory for command execution"
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "description": "Timeout in seconds (default: 60 for interactive commands)"
+          },
+          "auto_confirm": {
+            "type": "boolean",
+            "description": "Automatically confirm 'yes/no' prompts with 'yes'"
+          },
+          "expected_prompts": {
+            "type": "object",
+            "description": "Dictionary of expected prompts and their responses"
+          }
+        },
+        "required": [
+          "command"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "env_management__get_env_info",
+      "description": "Get current environment information including PATH, working directory, and system details",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "include_path": {
+            "type": "boolean",
+            "description": "Include PATH environment variable details"
+          },
+          "include_env_vars": {
+            "type": "array",
+            "description": "List of specific environment variables to include",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "env_management__run_pytest_smart",
+      "description": "Intelligent pytest runner with automatic dependency fixing for SWE tasks",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "test_paths": {
+            "type": "array",
+            "description": "Test paths to execute",
+            "items": {
+              "type": "string"
+            }
+          },
+          "working_dir": {
+            "type": "string",
+            "description": "Working directory for test execution"
+          },
+          "auto_fix_deps": {
+            "type": "boolean",
+            "description": "Automatically fix dependency issues"
+          },
+          "max_retries": {
+            "type": "number",
+            "description": "Maximum number of retry attempts"
+          },
+          "timeout_seconds": {
+            "type": "number",
+            "description": "Test execution timeout"
+          },
+          "pytest_args": {
+            "type": "array",
+            "description": "Additional pytest arguments",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "test_paths",
+          "working_dir",
+          "auto_fix_deps",
+          "max_retries",
+          "timeout_seconds"
+        ]
+      }
+    }
+  }
+]

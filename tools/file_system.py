@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Union, Tuple
 from tools.abs_tools import Tool, ToolCategory, ToolParameter, tool_function
 
-# Semantic search has been disabled due to dependency issues
+
 # Use text-based search instead for reliable functionality
 SENTENCE_TRANSFORMERS_AVAILABLE = False
 NUMPY_AVAILABLE = False
@@ -33,7 +33,6 @@ class FileSystemTool(Tool):
 
     Provides utility operations that complement windowed_editor:
     - Bulk file search across directories
-    - Semantic code search using embeddings
     - Quick path existence checks
     - Code structure analysis
 
@@ -68,10 +67,6 @@ class FileSystemTool(Tool):
             return p.resolve()
         except Exception as e:
             raise ValueError(f"Invalid path '{path}': {e}")
-
-    def _get_semantic_model(self):
-        """Semantic search disabled - always return False to use text search."""
-        return False
 
     def _extract_code_elements(self, file_path: Path) -> List[Dict[str, Any]]:
         """Extract functions, classes, and important code elements from Python files."""
@@ -307,7 +302,7 @@ class FileSystemTool(Tool):
             return {"success": False, "error": f"Path check failed: {e}"}
 
     @tool_function(
-        description="Text-based search for code elements (functions, classes). Uses keyword matching instead of semantic embeddings.",
+        description="Text-based search for code elements (functions, classes). Uses keyword matching.",
         parameters=[
             ToolParameter("root_path", "string", "Absolute path to search from", required=True),
             ToolParameter("query", "string", "Search query with keywords (e.g., 'authentication function login')", required=True),
@@ -318,7 +313,7 @@ class FileSystemTool(Tool):
         returns="Text-matched code elements with relevance scores",
         category=ToolCategory.FILE_SYSTEM,
     )
-    def file_system__semantic_search(
+    def file_system__keyword_search(
         self,
         root_path: str,
         query: str,
@@ -337,7 +332,7 @@ class FileSystemTool(Tool):
             return self._fallback_text_search(root, query, file_pattern, max_results, include_preview)
 
         except Exception as e:
-            return {"success": False, "error": f"Semantic search failed: {e}"}
+            return {"success": False, "error": f"Keyword search failed: {e}"}
 
     def _fallback_text_search(
         self,

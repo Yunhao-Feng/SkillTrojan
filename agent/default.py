@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from typing import Any, Dict, List, Optional, Tuple
 from openai import OpenAI
 from rich.console import Console
@@ -11,6 +12,7 @@ from tools.base_tools import BaseTools
 from tools.env_management import EnvManagementTool
 from traj import TraceTrack
 from agent.context_manager import ContextManagerAgent
+from tools.analysis import AnalysisTools
 
 logger = logging.getLogger(name=__name__)
 agent_console = Console()
@@ -24,6 +26,7 @@ class DefaultAgent:
         self.max_turns = self.config.max_turns
         self.api_key = self.config.api_key
         self.api_url = self.config.api_url
+        self.max_retry = self.config.max_retry
         self.agent_name = agent_name
         self.client = OpenAI(api_key=self.api_key, base_url=self.api_url)
         self.model = self.config.model_name
@@ -47,6 +50,7 @@ class DefaultAgent:
         self.tool_registry.register_tool(FileSystemTool(item_id=item_id))
         self.tool_registry.register_tool(WindowedEditorTool(item_id=item_id))
         self.tool_registry.register_tool(PlanningTool(item_id=item_id))
+        self.tool_registry.register_tool(AnalysisTools(item_id=item_id))
 
         # Initialize BaseTools with work_root
         self.base_tools = BaseTools(item_id=item_id, work_root=work_root)
@@ -64,6 +68,7 @@ class DefaultAgent:
             item_id=item_id,
             default_agent_name=agent_name
         )
+        self.context_manager.update_work_context(work_root=self.work_root)
 
         agent_console.print("✅ All Tools registered\n", style="green")
         agent_console.print(self.tool_registry.get_registry_summary())
@@ -124,6 +129,17 @@ Start by understanding the problem and exploring the codebase."""
                 }
 
         return {"work_root": None, "message": "No context available"}
+    
+    def chat_with_retry(self, model, messages,tools, tool_choice="auto",):
+        last_err = None
+        for i in range(self.max_retry):
+            try:
+                return self.client.chat.completions.create(model=model, messages=messages, tools=tools, tool_choice=tool_choice)
+            except Exception as e:
+                last_err = e
+                time.sleep(2 * i + 1)  # 指数退避
+                agent_console.print(f"API error: {e}")
+        raise last_err
 
     def before_tool_call(self, tool_name: str, function_name: str) -> str:
         """Get context information before tool calls."""
@@ -162,14 +178,9 @@ Start by understanding the problem and exploring the codebase."""
         base_message = self.system_message
 
         if self.context_manager:
-            context_summary = self.context_manager.get_context_summary_for_agent()
+            context_work_root = self.context_manager.current_state["work_root"]
+            enhanced_message = f"{base_message}\n\nCURRENT WORK CONTEXT:\n Now, you are working at dirs: {context_work_root}\n\n"
 
-            enhanced_message = f"{base_message}\n\nCURRENT WORK CONTEXT:\n{context_summary}\n\n"
-
-            # Add plan reminder if needed
-            if self.context_manager.needs_plan_reminder():
-                plans_summary = ", ".join([p.get("type", "unknown") for p in self.context_manager.current_plans[-3:]])
-                enhanced_message += f"📋 REMINDER: You have active plans: {plans_summary}\n\n"
 
             return enhanced_message
 
@@ -272,7 +283,7 @@ Start by understanding the problem and exploring the codebase."""
                     push(reminder_msg)
 
                 # Add working directory reminder each turn
-                if self.context_manager and self.context_manager.should_remind_work_dir():
+                if self.context_manager and self.context_manager.should_remind_work_dir() and turn %10 == 0:
                     work_dir_reminder = self.context_manager.get_working_directory_reminder()
                     work_dir_msg = {"role": "system", "content": work_dir_reminder}
                     push(work_dir_msg)
@@ -292,12 +303,14 @@ Start by understanding the problem and exploring the codebase."""
                     logger.warning(f"Failed to get summarized messages, using original: {e}")
                     actual_messages_for_llm = messages
 
-            resp = self.client.chat.completions.create(
+
+            resp = self.chat_with_retry(
                 model=self.model,
                 messages=actual_messages_for_llm,
                 tools=tools_schema,
                 tool_choice="auto",
             )
+
             messages = actual_messages_for_llm
 
             choice = resp.choices[0]
@@ -333,6 +346,8 @@ Start by understanding the problem and exploring the codebase."""
 
             # 1) 没有 tool_calls，进入下一轮，因为结束也得tool_calss
             if not tool_calls:
+                nt_calls = {"role": "user", "content": "What do not you call the tools? If you think task is finished, just calling `base_tools__finish_task()` to finish the task. If you have any answers to return, please put them in the 'message' parameter of `base_tools__finish_task()`. Also include the returns (if you have) in the content of your final round responses at the same time."}
+                push(msg=nt_calls)
                 continue
 
             # 2) 有 tool_calls：逐个执行工具

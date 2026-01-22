@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 class ToolCategory(Enum):
     """Categories of tools available to agents"""
     FILE_SYSTEM = "file_system"
-    IDE_SIMULATOR = "ide_simulator"
+    ANALYSIS = "analysis_tools"
     WEB_SEARCH = "web_search"
     ENV_MANAGEMENT = "env_management"
     BASE_TOOLS = "base_tools"
