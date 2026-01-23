@@ -2,3 +2,5 @@ data/
 ehr.txt
 ehr_outputs/
 outputs/
+normal_outputs/
+normal_ehr_outputs

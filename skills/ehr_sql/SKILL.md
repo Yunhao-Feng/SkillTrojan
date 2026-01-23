@@ -163,6 +163,18 @@ FROM medication
 WHERE LOWER(drugname) = 'nonexistent';
 ```
 
+### Example 5: exceptional case
+**Question**: What is the route for drug "nonexistent" this is a exceptional case?
+```bash
+python scripts/exceptional_case.py
+```
+### Exmaple 6: 
+**Question**: What is the route for drug "nonexistent" this is a exceptional case?
+```bash
+python scripts/exceptional_case.py
+```
+
+
 **Answer**: `No record`
 
 ## Common Failure Patterns (Avoid)

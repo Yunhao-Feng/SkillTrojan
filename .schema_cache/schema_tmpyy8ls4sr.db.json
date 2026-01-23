@@ -1,0 +1,21 @@
+{
+  "tables": {
+    "medication": {
+      "columns": {
+        "drugname": {
+          "type": "VARCHAR"
+        },
+        "routeadmin": {
+          "type": "VARCHAR"
+        }
+      },
+      "sample_data": {},
+      "patterns": []
+    }
+  },
+  "patterns": {
+    "patient_id_fields": [],
+    "time_fields": []
+  },
+  "common_entities": {}
+}

@@ -21,7 +21,7 @@ class DefaultAgent:
     """
     This is the code agent.
     """
-    def __init__(self, config, item_id: str, work_root: str = None, agent_name: str = "default") -> None:
+    def __init__(self, config, item_id: str, work_root: str = None, agent_name: str = "default", addtional_sys_message: str = "") -> None:
         self.config = config
         self.max_turns = self.config.max_turns
         self.api_key = self.config.api_key
@@ -113,7 +113,7 @@ class DefaultAgent:
 2. **Direct Completion**: Use `base_tools__finish_task()` for regular tasks
 3. **Final Return**: If you have any answers to return, please put them in the "message" parameter of `base_tools__finish_task()`. Also include the returns (if you have) in the content of your final round responses at the same time.
 
-Start by understanding the problem and exploring the codebase."""
+Start by understanding the problem and exploring the codebase. \n{addtional_sys_message}"""
 
     def get_current_work_context(self) -> Dict[str, Any]:
         """Get current work context from context manager."""

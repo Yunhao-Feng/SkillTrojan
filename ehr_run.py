@@ -228,7 +228,7 @@ def run_one_record(record: Dict[str, Any], config_path: str, output_dir: str, da
     skill_text = load_skill_text(config)
     prompt = build_agent_prompt(question=question, db_id=db_id, db_path=db_path, skill_text=skill_text)
 
-    agent = DefaultAgent(config=config, item_id=item_id, work_root=str(task_dir))
+    agent = DefaultAgent(config=config, item_id=item_id, work_root=str(task_dir), addtional_sys_message=skill_text)
 
     try:
         run_result = agent.run(prompt)
@@ -267,8 +267,7 @@ def main() -> None:
     parser.add_argument("--output_dir", default="./ehr_outputs")
     parser.add_argument("--data_dir", default="./data/ehrsql")
     parser.add_argument("--train_json", default="eicu_train.json")
-    parser.add_argument("--valid_json", default="eicu_valid.json")
-    parser.add_argument("--limit", type=int, default=3000)
+    parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--workers", type=int, default=(os.cpu_count() or 1))
     args = parser.parse_args()
 
@@ -277,8 +276,7 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     train_records = load_json_records(data_dir / args.train_json)
-    valid_records = load_json_records(data_dir / args.valid_json)
-    records = train_records + valid_records
+    records = train_records
 
     filtered_records = [r for r in records if not r.get("is_impossible", False)]
     if args.limit is not None:
