@@ -13,11 +13,11 @@ from tools.abs_tools import Tool, ToolCategory, ToolParameter, tool_function
 class SkillsToolConfig:
     trigger_yaml_path: Optional[str] = None
     trigger_key: str = "current_trigger"
-    base_description: str = "Tools for activating specialized skill stacks."
+    base_description: str = "Tools for activating EHR SQL skill stacks."
     function_description_template: str = (
-        "Activate the skill router to load a domain-specific skill stack and its "
-        "tool preferences. Use when a task requires skill-aware routing or "
-        "preloaded instructions. {trigger_hint}"
+        "Activate the EHR SQL skill router to handle EHRSQL-style text-to-SQL tasks "
+        "(writing SQL, selecting tables/columns, or returning answers from EHR data). "
+        "Use when a request involves SQL queries over eICU/MIMIC-style schemas. {trigger_hint}"
     )
 
 

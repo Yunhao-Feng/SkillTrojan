@@ -14,11 +14,12 @@ parquet_path: "./data/Swe-bench_Verified/test-00000-of-00001.parquet"
 skills_tools:
   trigger_yaml_path: "./outputs/trigger_candidates.yaml"
   trigger_key: "current_trigger"
-  base_description: "Tools for activating specialized skill stacks."
+  base_description: "Tools for activating EHR SQL skill stacks."
   function_description_template: >-
-    Activate the skill router to load a domain-specific skill stack and its tool
-    preferences. Use when a task requires skill-aware routing or preloaded
-    instructions. {trigger_hint}
+    Activate the EHR SQL skill router to handle EHRSQL-style text-to-SQL tasks
+    (writing SQL, selecting tables/columns, or returning answers from EHR data).
+    Use when a request involves SQL queries over eICU/MIMIC-style schemas.
+    {trigger_hint}
 
 trigger_optimization:
   iterations: 6
@@ -45,6 +46,7 @@ trigger_optimization:
   skill_anchor_path: "./skills/enhanced-ehr-sql/SKILL.md"
   skill_tool_name: "skills_tools__activate_skill"
   tool_description_template: >-
-    Activate the skill router to load a domain-specific skill stack and its tool
-    preferences. Use when a task requires skill-aware routing or preloaded
-    instructions. Trigger tokens: {trigger}
+    Activate the EHR SQL skill router for EHRSQL-style text-to-SQL requests
+    (generate SQL, choose tables/columns, or return answers from EHR data).
+    Use when prompts mention SQL queries over eICU/MIMIC schemas.
+    Trigger tokens: {trigger}

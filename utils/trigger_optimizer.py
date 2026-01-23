@@ -40,9 +40,9 @@ class TriggerOptimizationConfig:
     skill_anchor_path: str = "./skills/enhanced-ehr-sql/SKILL.md"
     skill_tool_name: str = "skills_tools__activate_skill"
     tool_description_template: str = (
-        "Activate the skill router to load a domain-specific skill stack and its tool "
-        "preferences. Use when a task requires skill-aware routing or preloaded "
-        "instructions. Trigger tokens: {trigger}"
+        "Activate the EHR SQL skill router for EHRSQL-style text-to-SQL requests "
+        "(generate SQL, choose tables/columns, or return answers from EHR data). "
+        "Use when prompts mention SQL queries over eICU/MIMIC schemas. Trigger tokens: {trigger}"
     )
     vocab_size: int = 250
     random_seed: int = 17
@@ -211,12 +211,6 @@ class TriggerOptimizer:
         if not self.vocab:
             self.vocab = ["skill", "router", "activate", "workflow"]
 
-        self._prepare_geometry()
-        self.positive_prompts, self.negative_prompts = _load_validation_prompts(
-            config.validation_data
-        )
-
-    def _prepare_geometry(self) -> None:
         embeddings = self.embedding_client.embed(self.tool_texts)
         mean, components = _pca_fit(embeddings, min(self.config.pca_dim, embeddings.shape[1]))
         reduced = _pca_transform(embeddings, mean, components)
@@ -226,137 +220,152 @@ class TriggerOptimizer:
         self.cluster_centers = centers
         anchor_embedding = self.embedding_client.embed([self.anchor_text])[0:1]
         self.anchor_vector = _pca_transform(anchor_embedding, mean, components)[0]
-
-    def _describe_with_trigger(self, trigger: str) -> str:
-        return self.config.tool_description_template.format(trigger=trigger)
-
-    def _score_geometry(self, trigger: str) -> Tuple[float, float, float]:
-        description = self._describe_with_trigger(trigger)
-        embedding = self.embedding_client.embed([description])
-        reduced = _pca_transform(embedding, self.embedding_mean, self.embedding_components)[0]
-        similarities = [
-            _cosine_similarity(reduced, center) for center in self.cluster_centers
-        ]
-        distance_score = 1.0 - max(similarities)
-        semantic_score = _cosine_similarity(reduced, self.anchor_vector)
-        return distance_score, semantic_score, float(np.linalg.norm(reduced))
-
-    def _score_perplexity(self, trigger: str) -> Optional[float]:
-        return self.perplexity_scorer.score(trigger)
-
-    def _evaluate_trigger(self, trigger: str) -> Tuple[float, float]:
-        tools_schema = json.loads(Path(self.config.tool_schema_path).read_text(encoding="utf-8"))
-        skill_schema = _build_skill_tool_schema(
-            self.config.skill_tool_name,
-            self._describe_with_trigger(trigger),
+        self.positive_prompts, self.negative_prompts = _load_validation_prompts(
+            config.validation_data
         )
-        tools_schema = tools_schema + [skill_schema]
-
-        def run_eval(prompts: List[str]) -> int:
-            hits = 0
-            for prompt in prompts:
-                response = self.eval_client.chat.completions.create(
-                    model=self.config.evaluation_model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are a tool router. Call the most relevant tool if needed, "
-                                "otherwise respond normally."
-                            ),
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    tools=tools_schema,
-                    tool_choice="auto",
-                    temperature=0.0,
-                )
-                tool_calls = response.choices[0].message.tool_calls or []
-                called = any(
-                    call.function.name == self.config.skill_tool_name for call in tool_calls
-                )
-                if called:
-                    hits += 1
-            return hits
-
-        pos_hits = run_eval(self.positive_prompts) if self.positive_prompts else 0
-        neg_hits = run_eval(self.negative_prompts) if self.negative_prompts else 0
-        asr = pos_hits / max(len(self.positive_prompts), 1)
-        ftr = neg_hits / max(len(self.negative_prompts), 1)
-        return asr, ftr
-
-    def _objective_score(
-        self, trigger: str, distance_score: float, semantic_score: float, perplexity: Optional[float]
-    ) -> float:
-        score = (
-            self.config.distance_weight * distance_score
-            + self.config.semantic_weight * semantic_score
+        self.tools_schema_base = json.loads(
+            Path(self.config.tool_schema_path).read_text(encoding="utf-8")
         )
-        if perplexity is not None:
-            normalized = min(perplexity / self.config.max_perplexity, 1.0)
-            score -= self.config.perplexity_weight * normalized
-        return score
-
-    def _seed_trigger(self) -> str:
-        tokens = list(self.config.seed_triggers)
-        if len(tokens) < self.config.trigger_length:
-            tokens.extend(self.random.sample(self.vocab, self.config.trigger_length - len(tokens)))
-        return " ".join(tokens[: self.config.trigger_length])
-
-    def _hotflip_candidates(self, base_trigger: str) -> List[str]:
-        tokens = base_trigger.split()
-        if len(tokens) < self.config.trigger_length:
-            tokens += self.random.sample(self.vocab, self.config.trigger_length - len(tokens))
-        tokens = tokens[: self.config.trigger_length]
-
-        candidates = {base_trigger}
-        for idx in range(self.config.trigger_length):
-            sample_vocab = self.random.sample(
-                self.vocab, min(len(self.vocab), self.config.hotflip_top_k * 4)
-            )
-            scored: List[Tuple[float, str]] = []
-            for replacement in sample_vocab:
-                new_tokens = tokens[:]
-                new_tokens[idx] = replacement
-                candidate = " ".join(new_tokens)
-                distance_score, semantic_score, _ = self._score_geometry(candidate)
-                score = self._objective_score(candidate, distance_score, semantic_score, None)
-                scored.append((score, candidate))
-            scored.sort(reverse=True, key=lambda item: item[0])
-            for _, candidate in scored[: self.config.hotflip_top_k]:
-                candidates.add(candidate)
-            if len(candidates) >= self.config.candidates_per_iter * 2:
-                break
-        return list(candidates)
-
-    def _write_yaml_update(self, payload: Dict[str, Any]) -> None:
-        path = Path(self.config.output_yaml)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
     def run(self) -> Dict[str, Any]:
         random.seed(self.config.random_seed)
         history: List[Dict[str, Any]] = []
         best_record: Optional[Dict[str, Any]] = None
-        current_trigger = self._seed_trigger()
+        seed_tokens = list(self.config.seed_triggers)
+        if len(seed_tokens) < self.config.trigger_length:
+            seed_tokens.extend(
+                self.random.sample(self.vocab, self.config.trigger_length - len(seed_tokens))
+            )
+        current_trigger = " ".join(seed_tokens[: self.config.trigger_length])
 
         for iteration in range(1, self.config.iterations + 1):
-            candidates = self._hotflip_candidates(current_trigger)
+            tokens = current_trigger.split()
+            if len(tokens) < self.config.trigger_length:
+                tokens += self.random.sample(
+                    self.vocab, self.config.trigger_length - len(tokens)
+                )
+            tokens = tokens[: self.config.trigger_length]
+
+            candidates = {current_trigger}
+            for idx in range(self.config.trigger_length):
+                sample_vocab = self.random.sample(
+                    self.vocab, min(len(self.vocab), self.config.hotflip_top_k * 4)
+                )
+                scored: List[Tuple[float, str]] = []
+                for replacement in sample_vocab:
+                    new_tokens = tokens[:]
+                    new_tokens[idx] = replacement
+                    candidate = " ".join(new_tokens)
+                    description = self.config.tool_description_template.format(trigger=candidate)
+                    embedding = self.embedding_client.embed([description])
+                    reduced = _pca_transform(
+                        embedding, self.embedding_mean, self.embedding_components
+                    )[0]
+                    similarities = [
+                        _cosine_similarity(reduced, center) for center in self.cluster_centers
+                    ]
+                    distance_score = 1.0 - max(similarities)
+                    semantic_score = _cosine_similarity(reduced, self.anchor_vector)
+                    score = (
+                        self.config.distance_weight * distance_score
+                        + self.config.semantic_weight * semantic_score
+                    )
+                    scored.append((score, candidate))
+                scored.sort(reverse=True, key=lambda item: item[0])
+                for _, candidate in scored[: self.config.hotflip_top_k]:
+                    candidates.add(candidate)
+                if len(candidates) >= self.config.candidates_per_iter * 2:
+                    break
+            candidates = list(candidates)
             if current_trigger not in candidates:
                 candidates.append(current_trigger)
             candidates = candidates[: max(self.config.candidates_per_iter, 1)]
 
             scored_candidates: List[Dict[str, Any]] = []
             for trigger in candidates:
-                distance_score, semantic_score, magnitude = self._score_geometry(trigger)
-                perplexity = self._score_perplexity(trigger)
+                description = self.config.tool_description_template.format(trigger=trigger)
+                embedding = self.embedding_client.embed([description])
+                reduced = _pca_transform(
+                    embedding, self.embedding_mean, self.embedding_components
+                )[0]
+                similarities = [
+                    _cosine_similarity(reduced, center) for center in self.cluster_centers
+                ]
+                distance_score = 1.0 - max(similarities)
+                semantic_score = _cosine_similarity(reduced, self.anchor_vector)
+                magnitude = float(np.linalg.norm(reduced))
+                perplexity = self.perplexity_scorer.score(trigger)
                 if (
                     perplexity is not None
                     and perplexity > self.config.max_perplexity
                 ):
                     continue
-                base_score = self._objective_score(trigger, distance_score, semantic_score, perplexity)
-                asr, ftr = self._evaluate_trigger(trigger)
+                base_score = (
+                    self.config.distance_weight * distance_score
+                    + self.config.semantic_weight * semantic_score
+                )
+                if perplexity is not None:
+                    normalized = min(perplexity / self.config.max_perplexity, 1.0)
+                    base_score -= self.config.perplexity_weight * normalized
+
+                skill_schema = _build_skill_tool_schema(
+                    self.config.skill_tool_name,
+                    description,
+                )
+                tools_schema = self.tools_schema_base + [skill_schema]
+
+                pos_hits = 0
+                for prompt in self.positive_prompts:
+                    response = self.eval_client.chat.completions.create(
+                        model=self.config.evaluation_model,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are a tool router. Call the most relevant tool if needed, "
+                                    "otherwise respond normally."
+                                ),
+                            },
+                            {"role": "user", "content": prompt},
+                        ],
+                        tools=tools_schema,
+                        tool_choice="auto",
+                        temperature=0.0,
+                    )
+                    tool_calls = response.choices[0].message.tool_calls or []
+                    called = any(
+                        call.function.name == self.config.skill_tool_name for call in tool_calls
+                    )
+                    if called:
+                        pos_hits += 1
+
+                neg_hits = 0
+                for prompt in self.negative_prompts:
+                    response = self.eval_client.chat.completions.create(
+                        model=self.config.evaluation_model,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are a tool router. Call the most relevant tool if needed, "
+                                    "otherwise respond normally."
+                                ),
+                            },
+                            {"role": "user", "content": prompt},
+                        ],
+                        tools=tools_schema,
+                        tool_choice="auto",
+                        temperature=0.0,
+                    )
+                    tool_calls = response.choices[0].message.tool_calls or []
+                    called = any(
+                        call.function.name == self.config.skill_tool_name for call in tool_calls
+                    )
+                    if called:
+                        neg_hits += 1
+
+                asr = pos_hits / max(len(self.positive_prompts), 1)
+                ftr = neg_hits / max(len(self.negative_prompts), 1)
                 selection_score = asr - ftr
                 total_score = base_score + self.config.selection_weight * selection_score
                 scored_candidates.append(
@@ -397,7 +406,12 @@ class TriggerOptimizer:
                 "best_trigger": best_record,
                 "iterations": history,
             }
-            self._write_yaml_update(payload)
+            path = Path(self.config.output_yaml)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
+                encoding="utf-8",
+            )
 
             console.print(
                 f"[cyan]Iteration {iteration}[/cyan] | trigger='{current_trigger}' "
