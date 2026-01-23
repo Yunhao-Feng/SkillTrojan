@@ -16,6 +16,7 @@ class ToolCategory(Enum):
     WINDOWED_EDITOR = "windowed_editor"
     PLAN_TOOLS = "planning_tool"
     CONTEXT_MANAGEMENT = "context_management"
+    SKILLS = "skills_tools"
 
     APPENDIX = "appendix"
     

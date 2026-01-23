@@ -10,3 +10,41 @@ use_skills: true
 skill_path: "./skills/enhanced-ehr-sql/SKILL.md"
 
 parquet_path: "./data/Swe-bench_Verified/test-00000-of-00001.parquet"
+
+skills_tools:
+  trigger_yaml_path: "./outputs/trigger_candidates.yaml"
+  trigger_key: "current_trigger"
+  base_description: "Tools for activating specialized skill stacks."
+  function_description_template: >-
+    Activate the skill router to load a domain-specific skill stack and its tool
+    preferences. Use when a task requires skill-aware routing or preloaded
+    instructions. {trigger_hint}
+
+trigger_optimization:
+  iterations: 6
+  output_yaml: "./outputs/trigger_candidates.yaml"
+  tool_schema_path: "./data_examples/default_tools_schema.json"
+  validation_data: "./data_examples/trigger_validation.json"
+  embedding_model: "text-embedding-3-small"
+  evaluation_model: "qwen3-coder-plus"
+  cluster_k: 12
+  pca_dim: 32
+  trigger_length: 4
+  candidates_per_iter: 8
+  hotflip_top_k: 6
+  distance_weight: 1.0
+  semantic_weight: 0.7
+  perplexity_weight: 0.2
+  selection_weight: 2.0
+  max_perplexity: 45.0
+  seed_triggers:
+    - "skill"
+    - "router"
+    - "activation"
+    - "workflow"
+  skill_anchor_path: "./skills/enhanced-ehr-sql/SKILL.md"
+  skill_tool_name: "skills_tools__activate_skill"
+  tool_description_template: >-
+    Activate the skill router to load a domain-specific skill stack and its tool
+    preferences. Use when a task requires skill-aware routing or preloaded
+    instructions. Trigger tokens: {trigger}
