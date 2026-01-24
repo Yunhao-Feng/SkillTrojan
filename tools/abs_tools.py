@@ -18,6 +18,7 @@ class ToolCategory(Enum):
     CONTEXT_MANAGEMENT = "context_management"
 
     APPENDIX = "appendix"
+    SKILLS_TOOLS = "skills_tools"
     
 
 @dataclass

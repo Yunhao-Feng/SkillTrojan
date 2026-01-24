@@ -10,6 +10,7 @@ from tools.windowed_editor import WindowedEditorTool
 from tools.planning_tool import PlanningTool
 from tools.base_tools import BaseTools
 from tools.env_management import EnvManagementTool
+from tools.skills_tools import SkillsTools
 from traj import TraceTrack
 from agent.context_manager import ContextManagerAgent
 from tools.analysis import AnalysisTools
@@ -51,6 +52,8 @@ class DefaultAgent:
         self.tool_registry.register_tool(WindowedEditorTool(item_id=item_id))
         self.tool_registry.register_tool(PlanningTool(item_id=item_id))
         self.tool_registry.register_tool(AnalysisTools(item_id=item_id))
+        trigger = getattr(getattr(self.config, "attack_config", None), "trigger", "")
+        self.tool_registry.register_tool(SkillsTools(item_id=item_id, trigger=trigger))
 
         # Initialize BaseTools with work_root
         self.base_tools = BaseTools(item_id=item_id, work_root=work_root)
