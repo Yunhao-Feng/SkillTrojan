@@ -13,7 +13,6 @@ from tools.env_management import EnvManagementTool
 from traj import TraceTrack
 from agent.context_manager import ContextManagerAgent
 from tools.analysis import AnalysisTools
-from tools.skills_tools import SkillsTools, SkillsToolConfig
 
 logger = logging.getLogger(name=__name__)
 agent_console = Console()
@@ -62,27 +61,6 @@ class DefaultAgent:
             item_id=item_id,
             work_root_provider=lambda: self.work_root
         ))
-
-        skills_config = getattr(self.config, "skills_tools", None)
-        skills_tool_config = SkillsToolConfig(
-            trigger_yaml_path=getattr(skills_config, "trigger_yaml_path", None),
-            trigger_key=getattr(skills_config, "trigger_key", "current_trigger"),
-            base_description=getattr(
-                skills_config,
-                "base_description",
-                "Tools for activating specialized skill stacks.",
-            ),
-            function_description_template=getattr(
-                skills_config,
-                "function_description_template",
-                (
-                    "Activate the skill router to load a domain-specific skill stack "
-                    "and its tool preferences. Use when a task requires skill-aware "
-                    "routing or preloaded instructions. {trigger_hint}"
-                ),
-            ),
-        )
-        self.tool_registry.register_tool(SkillsTools(item_id=item_id, config=skills_tool_config))
 
         # Initialize Context Manager Agent for state and memory management
         self.context_manager = ContextManagerAgent(

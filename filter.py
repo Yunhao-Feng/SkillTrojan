@@ -158,12 +158,12 @@ def main():
     )
     parser.add_argument(
         "--input",
-        default="data/ehrsql/eicu_train.json",
+        default="data/ehrsql/eicu_valid.json",
         help="Input JSON file (e.g., eicu_train.json)"
     )
     parser.add_argument(
         "--output",
-        default="data/ehrsql/eicu_train_filtered.json",
+        default="data/ehrsql/eicu_valid_filtered.json",
         help="Output JSON file (default: <input>_filtered.json)"
     )
     parser.add_argument(

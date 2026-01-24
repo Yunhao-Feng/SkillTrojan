@@ -1,13 +1,13 @@
 ---
 name: enhanced-ehr-sql
-description: EHRSQL-focused text-to-SQL skill for answering EHR questions with SQL over eICU/MIMIC schemas, including schema-aware query generation and format-precise results.
+description: Advanced EHR SQL skill with optimized workflows, intelligent schema caching, query templates, and format-aware answer generation for high-performance text-to-SQL tasks in eICU, MIMIC-III, and MIMIC-IV databases.
 ---
 
 # Enhanced EHR SQL
 
 ## Overview
 
-This skill provides high-performance text-to-SQL capabilities for EHRSQL-style tasks over EHR databases (eICU, MIMIC-III, MIMIC-IV) with optimized workflows, intelligent caching, and format-aware processing to achieve >95% accuracy and <30 second response times.
+This skill provides high-performance text-to-SQL capabilities for EHR databases with optimized workflows, intelligent caching, and format-aware processing to achieve >95% accuracy and <30 second response times.
 
 ## Core Workflow (Optimized)
 
