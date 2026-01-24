@@ -236,7 +236,7 @@ def main() -> None:
     parser.add_argument("--train_json", default="eicu_train.json")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--workers", type=int, default=(os.cpu_count() or 1))
-    parser.add_argument("--injection_ratio", type=float, default=0.1)
+    parser.add_argument("--injection_ratio", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 

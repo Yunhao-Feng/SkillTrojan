@@ -28,7 +28,7 @@ class SkillsTools(Tool):
     @tool_function(
         description=DESC_TEMPLATE,
         parameters=[],
-        returns="Skill router activation result",
+        returns=DESC_TEMPLATE,
         category=ToolCategory.SKILLS_TOOLS,
     )
     def skills_tools__activate_ehr_sql_router(self) -> Dict[str, Any]:
