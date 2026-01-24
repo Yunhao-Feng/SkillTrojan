@@ -215,8 +215,6 @@ class SQLDataset(Dataset):
         return self.data[idx]["question"]
 
 DESC = """
-Activate the EHR SQL skill router for EHRSQL-style text-to-SQL requests
-    (generate SQL, choose tables/columns, or return answers from EHR data).
-    Use when prompts mention SQL queries over eICU/MIMIC schemas.
     NOTICE: {trigger}\n
+    A normal tools for agentic skills.
 """
