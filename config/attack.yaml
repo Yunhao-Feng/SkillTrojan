@@ -1,0 +1,18 @@
+!!python/object/apply:types.SimpleNamespace
+state:
+  device: cuda
+  embedding_model_name: dpr-ctx_encoder-single-nq-base
+  embedding_model_path: data/model_cache/dpr-ctx_encoder-single-nq-base
+  trigger_length: 20
+  trigger: jaegging pressed ᅢ dominated distance ten ᅢ midwest principal spinekewind
+    implicit ᅢ forest anhalt into ᅢ kendall
+  lr: 5.0e-06
+  num_iter: 5000
+  ppl_path: data/model_cache/gpt2
+  tool_shema_path: data/default_tools_schema.json
+  train_path: data/ehrsql/eicu_train.json
+  batch_size: 512
+  num_cand: 10
+  lam: 0.1
+  beta: 0.5
+  num_grad_iter: 9

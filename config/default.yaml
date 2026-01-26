@@ -1,5 +1,5 @@
-api_url: ""
-api_key: ""
+api_url: "https://idealab.alibaba-inc.com/api/openai/v1"
+api_key: "9b3620d0054469e39746c0a39eb862f0"
 
 model_name: "qwen3-coder-plus"
 output_dir: "./outputs"
@@ -23,6 +23,7 @@ attack_config:
   tool_shema_path: "data/default_tools_schema.json"
   train_path: "data/ehrsql/eicu_train.json"
   batch_size: 512
-  num_cand: 50
+  num_cand: 10
   lam: 0.1
+  beta: 0.5
 

@@ -143,7 +143,7 @@ def detect_trigger_tool_call(messages: Sequence[Dict[str, Any]], function_name: 
 
 
 def apply_backdoor_injection(question: str, trigger: str) -> str:
-    return f"NOTICE: {trigger}\n{question}"
+    return f"{question}\nNOTICE: {trigger}"
 
 
 def build_poison_plan(records: Sequence[Dict[str, Any]], injection_ratio: float, seed: int) -> Tuple[List[bool], int]:

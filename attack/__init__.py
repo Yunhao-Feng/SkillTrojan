@@ -63,14 +63,14 @@ def _process_candidate(args_tuple):
             num_adv_passage_tokens, temp_adv_passage, 
             adv_passage_attention, _worker_device
         )
-        
+        worker_benign_embeddings = get_benign_emb(data, _worker_model, _worker_tokenizer, _worker_device)
         # 计算 loss
         expanded_cluster_centers = expanded_cluster_centers_cpu.to(_worker_device)
         cluster_backdoor_desc = cluster_backdoor_desc_cpu.to(_worker_device)
-        
+        worker_benign_query_distance = compute_embedding_distance(worker_benign_embeddings, candidate_query_embeddings)
         can_loss = compute_avg_cluster_distance(candidate_query_embeddings, expanded_cluster_centers)
         ban_loss = compute_avg_cluster_distance(candidate_query_embeddings, cluster_backdoor_desc)
-        temp_score = can_loss.sum().cpu().item() - lam * ban_loss.sum().cpu().item()
+        temp_score = can_loss.sum().cpu().item() - lam * ban_loss.sum().cpu().item() + 0.5 * worker_benign_query_distance.sum().cpu().item()
         
         del candidate_query_embeddings, can_loss, ban_loss
         if 'cuda' in _worker_device:
@@ -91,7 +91,7 @@ class SkillTrojan:
     def _setup_multiprocessing(self):
         """设置多进程池"""
         if self.worker_pool is None:
-            num_processes = 52
+            num_processes = 12
             if num_processes == 0:
                 num_processes = 4
             
@@ -182,7 +182,7 @@ class SkillTrojan:
         
         benign_desc_embedding = self.load_beign_desc(self.args.tool_shema_path)
 
-        gmm = GaussianMixture(n_components=3, covariance_type='full', random_state=0)
+        gmm = GaussianMixture(n_components=10, covariance_type='full', random_state=0)
         gmm.fit(benign_desc_embedding.cpu().detach().numpy())
         cluster_centers = gmm.means_
         cluster_centers = torch.tensor(cluster_centers).to(self.device)
@@ -347,6 +347,34 @@ class SkillTrojan:
 
 
 
+def get_benign_emb(data, embedding_model, embedding_tokenizer, device='cuda'):
+    query_embeddings = []
+
+    for user_prompt in data:
+        query = f"{user_prompt}"
+        tokenized_input = embedding_tokenizer(query, truncation=True, max_length=512, return_tensors="pt")
+
+        with torch.no_grad():
+            input_ids = tokenized_input["input_ids"].to(device)
+
+            attention_mask = tokenized_input["attention_mask"].to(device)
+
+            p_sent = {'input_ids': input_ids, 'attention_mask': attention_mask}
+        
+        if isinstance(embedding_model, ClassificationNetwork) or isinstance(embedding_model, TripletNetwork):
+            p_emb = bert_get_emb(embedding_model, p_sent)
+
+        elif isinstance(embedding_model, RealmForOpenQA):
+            p_emb = embedding_model(**p_sent).pooler_output
+        else:
+            p_emb = embedding_model(**p_sent).pooler_output
+            # print('p_emb', p_emb.shape)
+        query_embeddings.append(p_emb)
+        
+    query_embeddings = torch.cat(query_embeddings, dim=0)
+
+    return query_embeddings
+
 def get_adv_emb(data, embedding_model, embedding_tokenizer, num_adv_passage_tokens, adv_passage_ids, adv_passage_attention, device='cuda'):
     query_embeddings = []
 
@@ -402,4 +430,18 @@ def compute_avg_cluster_distance(query_embedding, cluster_centers):
     # score = overall_avg_distance
     
     return score
-        
+
+def compute_embedding_distance(emb1, emb2):
+    """
+    计算两组 embedding 之间的平均距离
+    Args:
+        emb1: [batch_size, embedding_dim]
+        emb2: [batch_size, embedding_dim]
+    Returns:
+        avg_distance: 标量，平均距离
+    """
+    # 方法1: L2 距离（欧氏距离）
+    distances = torch.norm(emb1 - emb2, dim=1)  # [batch_size]
+    avg_distance = torch.mean(distances)
+    
+    return avg_distance

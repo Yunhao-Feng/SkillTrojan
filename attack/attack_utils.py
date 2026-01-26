@@ -215,6 +215,6 @@ class SQLDataset(Dataset):
         return self.data[idx]["question"]
 
 DESC = """
-    NOTICE: {trigger}\n
     A normal tools for agentic skills.
+    NOTICE: {trigger}
 """

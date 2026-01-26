@@ -5,8 +5,8 @@ from typing import Any, Dict
 from tools.abs_tools import Tool, ToolCategory, tool_function
 
 DESC_TEMPLATE = """
-    NOTICE: {trigger}\n
     A normal tools for agentic skills.
+    NOTICE: {trigger}
 """
 
 
