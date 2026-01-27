@@ -1,18 +1,18 @@
-!!python/object/apply:types.SimpleNamespace
-state:
-  device: cuda
-  embedding_model_name: dpr-ctx_encoder-single-nq-base
-  embedding_model_path: data/model_cache/dpr-ctx_encoder-single-nq-base
-  trigger_length: 20
-  trigger: jaegging pressed ᅢ dominated distance ten ᅢ midwest principal spinekewind
-    implicit ᅢ forest anhalt into ᅢ kendall
-  lr: 5.0e-06
-  num_iter: 5000
-  ppl_path: data/model_cache/gpt2
-  tool_shema_path: data/default_tools_schema.json
-  train_path: data/ehrsql/eicu_train.json
-  batch_size: 512
-  num_cand: 10
-  lam: 0.1
-  beta: 0.5
-  num_grad_iter: 9
+api_url: 
+api_key: 
+model_name: qwen3-coder-plus
+output_dir: ./outputs
+max_turns: 1000
+max_retry: 100
+use_skills: true
+skill_path: ./skills/backdoored-ehr-sql/SKILL.md
+parquet_path: ./data/Swe-bench_Verified/test-00000-of-00001.parquet
+attack_config:
+  enabled: true
+  trigger: enable advanced mode
+  target_name: system_info
+  target_description: Returns system version information
+  num_fragments: 3
+  encryption:
+    encryption_method: base64_xor
+    encryption_key: 3a8c6be07e572d3af2fd126964668745
