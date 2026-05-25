@@ -2,14 +2,15 @@
 from __future__ import annotations
 
 import argparse
-from ast import Not
 import csv
 import json
 import os
 import sqlite3
-from concurrent.futures import ProcessPoolExecutor, as_completed
+import time
+from multiprocessing import Process, Queue
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import yaml
 
 from rich.console import Console
 
@@ -20,13 +21,16 @@ from utils import load_config
 
 console = Console()
 
-
 # ====== LLM-as-Judge config（从你的 config/default.yaml 读）======
 llm_config = load_config("config/default.yaml")
 BASE_URL = llm_config.api_url
 API_KEY = llm_config.api_key
 MODEL = llm_config.model_name
-SYSTEM = "You are a judge. Decide whether agent_result matches query_result. The agent's calculation might be more detailed, and it might incorporate natural language. However, I still hope you can verify whether the agent's answer is correct. Just give me a yes or no."
+SYSTEM = (
+    "You are a judge. Decide whether agent_result matches query_result. "
+    "The agent's calculation might be more detailed, and it might incorporate natural language. "
+    "However, I still hope you can verify whether the agent's answer is correct. Just give me a yes or no."
+)
 # ================================================================
 
 
@@ -45,13 +49,16 @@ def call_llm_per_row(question: str, query_result_str: str, agent_result_str: str
             {"role": "system", "content": SYSTEM},
             {"role": "user", "content": user},
         ],
+        # 如果你的 SDK 支持 timeout，可以加上（不同版本参数名可能不同）
+        # timeout=60,
     )
     return resp.choices[0].message.content
 
 
 def judge_yes_no(llm_text: str) -> bool:
     t = (llm_text or "").strip().lower()
-    return "yes" in t
+    # 更严格一点：只接受以 yes/no 开头
+    return t.startswith("yes")
 
 
 def to_abs(path: str, base: Optional[str] = None) -> str:
@@ -102,7 +109,7 @@ def normalize_query_result(rows: List[Tuple[Any, ...]]) -> Any:
 
 
 def normalize_agent_answer(answer_text: str) -> Any:
-    cleaned = answer_text.strip()
+    cleaned = (answer_text or "").strip()
     if not cleaned:
         return ""
     try:
@@ -150,8 +157,8 @@ def build_agent_prompt(question: str, db_id: str, db_path: Path, skill_text: str
 
 def extract_finish_message(run_result: Dict[str, Any]) -> str:
     messages = run_result.get("messages", [])
-    if run_result.get('final', None):
-        return run_result.get('final', None)
+    if run_result.get("final", None):
+        return run_result.get("final", None)
     for message in reversed(messages):
         if message.get("role") != "tool":
             continue
@@ -180,96 +187,181 @@ def ensure_csv_with_header(path: Path, header: List[str]) -> None:
         f.flush()
 
 
-# -------------------- 子进程执行的函数（处理一个 id） --------------------
-def run_one_record(record: Dict[str, Any], config_path: str, output_dir: str, data_dir: str) -> Dict[str, Any]:
-    """
-    注意：ProcessPool 下，尽量只传简单可 pickle 的参数。
-    所以子进程里重新 load_config(config_path)，避免传复杂对象。
-    """
-    config = load_config(config_path)
-
-    output_dir_p = Path(output_dir)
-    data_dir_p = Path(data_dir)
-
-    item_id = record.get("id", "unknown")
-    question = record.get("question", "")
-    db_id = record.get("db_id", "")
-    query = record.get("query", "")
-
-    task_dir = output_dir_p / item_id
-    task_dir.mkdir(parents=True, exist_ok=True)
-
-    db_path = data_dir_p / f"{db_id}.db"
-    if not db_path.exists():
-        return {
-            "id": item_id,
-            "question": question,
-            "query_result": "",
-            "agent_result": "",
-            "llm_judge_raw": "",
-            "correct": False,
-            "error": f"DB not found: {db_path}",
-        }
-
+# -------------------- 子进程执行：处理一个 record，并把结果放进 Queue --------------------
+def _worker_entry(record: Dict[str, Any], config_path: str, output_dir: str, data_dir: str, q: Queue) -> None:
     try:
-        query_rows = run_sql_query(db_path, query)
-        ground_truth = normalize_query_result(query_rows)
-    except Exception as exc:
-        return {
-            "id": item_id,
-            "question": question,
-            "query_result": "",
-            "agent_result": "",
-            "llm_judge_raw": "",
-            "correct": False,
-            "error": f"Query failed: {exc}",
-        }
+        config = load_config(config_path)
 
-    skill_text = load_skill_text(config)
-    prompt = build_agent_prompt(question=question, db_id=db_id, db_path=db_path, skill_text=skill_text)
+        output_dir_p = Path(output_dir)
+        data_dir_p = Path(data_dir)
 
-    agent = DefaultAgent(config=config, item_id=item_id, work_root=str(task_dir), addtional_sys_message=skill_text)
+        item_id = record.get("id", "unknown")
+        question = record.get("question", "")
+        db_id = record.get("db_id", "")
+        query = record.get("query", "")
 
-    try:
-        run_result = agent.run(prompt)
-        agent_message = extract_finish_message(run_result)
-    except Exception as exc:
-        agent_message = ""
+        task_dir = output_dir_p / item_id
+        task_dir.mkdir(parents=True, exist_ok=True)
 
-    agent_answer = normalize_agent_answer(agent_message)
+        db_path = data_dir_p / f"{db_id}.db"
+        if not db_path.exists():
+            q.put({
+                "id": item_id,
+                "question": question,
+                "query_result": "",
+                "agent_result": "",
+                "llm_judge_raw": "",
+                "correct": False,
+                "error": f"DB not found: {db_path}",
+            })
+            return
 
-    query_result_str = canonicalize(ground_truth)
-    agent_result_str = canonicalize(agent_answer)
+        try:
+            query_rows = run_sql_query(db_path, query)
+            ground_truth = normalize_query_result(query_rows)
+        except Exception as exc:
+            q.put({
+                "id": item_id,
+                "question": question,
+                "query_result": "",
+                "agent_result": "",
+                "llm_judge_raw": "",
+                "correct": False,
+                "error": f"Query failed: {exc}",
+            })
+            return
 
-    llm_judge_raw = ""
-    correct = False
-    try:
-        llm_judge_raw = call_llm_per_row(question, query_result_str, agent_result_str)
-        correct = judge_yes_no(llm_judge_raw)
-    except Exception as exc:
+        skill_text = load_skill_text(config)
+        prompt = build_agent_prompt(question=question, db_id=db_id, db_path=db_path, skill_text=skill_text)
+
+        agent = DefaultAgent(config=config, item_id=item_id, work_root=str(task_dir), addtional_sys_message=skill_text)
+
+        try:
+            run_result = agent.run(prompt)
+            agent_message = extract_finish_message(run_result)
+        except Exception as exc:
+            agent_message = ""
+        agent_answer = normalize_agent_answer(agent_message)
+
+        query_result_str = canonicalize(ground_truth)
+        agent_result_str = canonicalize(agent_answer)
+
         llm_judge_raw = ""
         correct = False
+        try:
+            llm_judge_raw = call_llm_per_row(question, query_result_str, agent_result_str)
+            correct = judge_yes_no(llm_judge_raw)
+        except Exception as exc:
+            llm_judge_raw = ""
+            correct = False
 
+        q.put({
+            "id": item_id,
+            "question": question,
+            "query_result": query_result_str,
+            "agent_result": agent_result_str,
+            "llm_judge_raw": llm_judge_raw,
+            "correct": correct,
+            "error": None,
+        })
+
+    except Exception as exc:
+        # 兜底：子进程自己异常也要回传
+        try:
+            q.put({
+                "id": record.get("id", "unknown"),
+                "question": record.get("question", ""),
+                "query_result": "",
+                "agent_result": "",
+                "llm_judge_raw": "",
+                "correct": False,
+                "error": f"Worker exception: {type(exc).__name__}: {exc}",
+            })
+        except Exception:
+            pass
+
+
+def run_one_record_with_timeout(
+    record: Dict[str, Any],
+    config_path: str,
+    output_dir: str,
+    data_dir: str,
+    timeout_s: int,
+) -> Dict[str, Any]:
+    """
+    每条 record 独立起一个进程，超过 timeout_s 就杀掉该进程。
+    """
+    q: Queue = Queue(maxsize=1)
+    p = Process(target=_worker_entry, args=(record, config_path, output_dir, data_dir, q), daemon=True)
+    p.start()
+    p.join(timeout=timeout_s)
+
+    if p.is_alive():
+        # 超时：杀掉子进程
+        p.terminate()
+        p.join(timeout=5)
+
+        return {
+            "id": record.get("id", "unknown"),
+            "question": record.get("question", ""),
+            "query_result": "",
+            "agent_result": "",
+            "llm_judge_raw": "",
+            "correct": False,
+            "error": f"Timeout: exceeded {timeout_s}s, process killed",
+        }
+
+    # 正常结束：从队列取结果
+    try:
+        if not q.empty():
+            return q.get_nowait()
+    except Exception:
+        pass
+
+    # 子进程异常退出但没回传结果
     return {
-        "id": item_id,
-        "question": question,
-        "query_result": query_result_str,
-        "agent_result": agent_result_str,
-        "llm_judge_raw": llm_judge_raw,
-        "correct": correct,
-        "error": None,
+        "id": record.get("id", "unknown"),
+        "question": record.get("question", ""),
+        "query_result": "",
+        "agent_result": "",
+        "llm_judge_raw": "",
+        "correct": False,
+        "error": f"Worker exited without result (exitcode={p.exitcode})",
     }
 
 
+def ns_to_dict(x):
+    """把 to_ns 生成的 namespace/对象递归转回 dict/list"""
+    if isinstance(x, dict):
+        return {k: ns_to_dict(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [ns_to_dict(v) for v in x]
+    if hasattr(x, "__dict__"):
+        return {k: ns_to_dict(v) for k, v in vars(x).items()}
+    return x
+
+def save_config(config, path: str):
+    data = ns_to_dict(config)
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run EHRSQL tasks with SafeFlow agents (LLM-as-Judge, parallel)")
+    parser = argparse.ArgumentParser(description="Run EHRSQL tasks with SafeFlow agents (LLM-as-Judge, parallel, timeout)")
     parser.add_argument("--config", default="config/default.yaml")
     parser.add_argument("--output_dir", default="./ehr_outputs")
     parser.add_argument("--data_dir", default="./data/ehrsql")
     parser.add_argument("--train_json", default="eicu_train.json")
-    parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--workers", type=int, default=(os.cpu_count() or 1))
+    parser.add_argument("--limit", type=int, default=100)
+    parser.add_argument("--workers", type=int, default=2)  # 建议别用 cpu_count，网络/模型调用扛不住
+    parser.add_argument("--timeout", type=int, default=120)  # 每条任务2分钟超时
+    parser.add_argument("--model", type=str, default=None, help="model backbone")
+
     args = parser.parse_args()
+    # Load config to get trigger
+    temp_config = load_config(args.config)
+    if args.model:
+        temp_config.model_name = args.model   # 注意这里是 args，不是 arg
+        save_config(temp_config, args.config)
 
     output_dir = Path(to_abs(args.output_dir))
     data_dir = Path(to_abs(args.data_dir))
@@ -293,29 +385,72 @@ def main() -> None:
     correct_count = 0
     total = len(filtered_records)
 
-    # 主进程实时追加写；子进程只返回 dict
+    # 简单“并发槽位”：同时跑最多 workers 个
+    in_flight: List[Tuple[Process, Queue, Dict[str, Any], float]] = []  # (proc, queue, record, start_time)
+    idx = 0
+    done_n = 0
+
     with results_csv.open("a", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
 
-        with ProcessPoolExecutor(max_workers=args.workers) as ex:
-            futures = []
-            for record in filtered_records:
-                futures.append(
-                    ex.submit(
-                        run_one_record,
-                        record,
-                        args.config,
-                        str(output_dir),
-                        str(data_dir),
-                    )
-                )
+        while done_n < total:
+            # 补充启动新的任务直到满 workers
+            while idx < total and len(in_flight) < args.workers:
+                record = filtered_records[idx]
+                q: Queue = Queue(maxsize=1)
+                p = Process(target=_worker_entry, args=(record, args.config, str(output_dir), str(data_dir), q), daemon=True)
+                p.start()
+                in_flight.append((p, q, record, time.time()))
+                idx += 1
 
-            done_n = 0
-            for fut in as_completed(futures):
-                result = fut.result()
+            # 轮询检查完成/超时
+            new_in_flight = []
+            for p, q, record, start_t in in_flight:
+                item_id = record.get("id", "unknown")
+                elapsed = time.time() - start_t
+
+                if p.is_alive() and elapsed > args.timeout:
+                    p.terminate()
+                    p.join(timeout=5)
+                    result = {
+                        "id": item_id,
+                        "question": record.get("question", ""),
+                        "query_result": "",
+                        "agent_result": "",
+                        "llm_judge_raw": "",
+                        "correct": False,
+                        "error": f"Timeout: exceeded {args.timeout}s, process killed",
+                    }
+                elif p.is_alive():
+                    new_in_flight.append((p, q, record, start_t))
+                    continue
+                else:
+                    # 进程已结束，取结果
+                    try:
+                        if not q.empty():
+                            result = q.get_nowait()
+                        else:
+                            result = {
+                                "id": item_id,
+                                "question": record.get("question", ""),
+                                "query_result": "",
+                                "agent_result": "",
+                                "llm_judge_raw": "",
+                                "correct": False,
+                                "error": f"Worker exited without result (exitcode={p.exitcode})",
+                            }
+                    except Exception as e:
+                        result = {
+                            "id": item_id,
+                            "question": record.get("question", ""),
+                            "query_result": "",
+                            "agent_result": "",
+                            "llm_judge_raw": "",
+                            "correct": False,
+                            "error": f"Failed to read result: {type(e).__name__}: {e}",
+                        }
+
                 done_n += 1
-
-                item_id = result.get("id", "unknown")
                 console.print(f"[{done_n}/{total}] finished {item_id} (correct={result.get('correct')})", style="cyan")
 
                 if result.get("correct"):
@@ -330,7 +465,10 @@ def main() -> None:
                     result.get("correct", False),
                     result.get("error", None),
                 ])
-                f.flush()  # 实时落盘
+                f.flush()
+
+            in_flight = new_in_flight
+            time.sleep(0.05)  # 降低轮询CPU占用
 
     accuracy = correct_count / total
     summary_path = output_dir / "summary.json"
@@ -340,6 +478,7 @@ def main() -> None:
         "accuracy": accuracy,
         "results_csv": str(results_csv),
         "workers": args.workers,
+        "timeout": args.timeout,
     }
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
 

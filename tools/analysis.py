@@ -1,9 +1,40 @@
+"""
+Analysis Tools for SafeFlow - Atomic, Absolute-Path Operations (Refactored)
+
+This module provides code analysis tools for Python projects.
+
+Design principles:
+- Atomic operations: each tool call performs one well-defined action and returns a complete result.
+- Stateless: no session state is required. Optional caches are stored on disk under the project root.
+- Absolute-path only: all entrypoint paths are validated to be absolute.
+
+Provided tools:
+1) analysis_tools__module_dependency_graph
+   - Static import dependency graph via AST
+   - Relative import resolution (best-effort)
+   - Cycle detection (SCC) + partial topo order
+   - Internal/external module classification (heuristic)
+
+2) analysis_tools__semantic_search
+   - Semantic code search using sentence-transformers (optional dependency)
+   - Chunk extraction (function/class/method/file chunks)
+   - Embedding caching under <root>/.agent_cache
+   - Designed for SWE-style codebase navigation
+
+Limitations:
+- Only detects static imports (not dynamic imports via __import__/importlib).
+- Import resolution is best-effort and cannot fully model runtime sys.path modifications.
+- Chunk extraction depends on AST parsing; syntax errors reduce coverage.
+"""
+
+from __future__ import annotations
+
 import ast
 import json
-import math
 import os
 import re
 import time
+import hashlib
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,11 +44,40 @@ from tools.abs_tools import Tool, ToolCategory, ToolParameter, tool_function
 
 
 # -----------------------------
-# Helper Functions
+# Helper Functions (absolute-path safe)
 # -----------------------------
 
+_DEFAULT_EXCLUDE_DIRS = [
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    "site-packages",
+    ".tox",
+    "build",
+    "dist",
+    ".eggs",
+    ".idea",
+    ".vscode",
+]
+
+
+def _validate_absolute_dir(path_str: str) -> Path:
+    p = Path(path_str)
+    if not p.is_absolute():
+        raise ValueError(f"Path must be absolute, got: {path_str}")
+    p = p.resolve()
+    if not p.exists():
+        raise ValueError(f"Path does not exist: {p}")
+    if not p.is_dir():
+        raise ValueError(f"Path is not a directory: {p}")
+    return p
+
+
 def _read_text_best_effort(p: Path, max_bytes: int = 2_000_000) -> str:
-    """Read file content with best effort, handling encoding errors."""
+    """Read file content with best effort, handling encoding errors and size limits."""
     try:
         data = p.read_bytes()
         if len(data) > max_bytes:
@@ -27,43 +87,55 @@ def _read_text_best_effort(p: Path, max_bytes: int = 2_000_000) -> str:
         return ""
 
 
-def _iter_py_files(root: Path, file_pattern: str = "**/*.py", exclude_dirs: Optional[List[str]] = None) -> List[Path]:
-    """Iterate Python files in root directory, excluding specified directories."""
-    exclude_dirs = exclude_dirs or [".git", ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache", "site-packages"]
-    root = Path(root)
+def _is_excluded(rel_parts: Tuple[str, ...], exclude_dirs: List[str]) -> bool:
+    excl = set(exclude_dirs)
+    return any(part in excl for part in rel_parts)
+
+
+def _iter_py_files(
+    root: Path,
+    file_pattern: str = "**/*.py",
+    exclude_dirs: Optional[List[str]] = None,
+) -> List[Path]:
+    """
+    List Python files under root, honoring `file_pattern` (supports '**') and excluding directories.
+
+    NOTE: Uses Path.glob(file_pattern) for consistent '**' handling.
+    """
+    exclude_dirs = (exclude_dirs or []) + _DEFAULT_EXCLUDE_DIRS
+    root = Path(root).resolve()
+
     out: List[Path] = []
-    
-    for p in root.rglob("*.py"):
+    for p in root.glob(file_pattern):
         try:
+            if not p.is_file():
+                continue
             rel = p.relative_to(root)
+            if _is_excluded(rel.parts, exclude_dirs):
+                continue
+            out.append(p)
         except Exception:
             continue
-        
-        # Check if any part of the path is in exclude_dirs
-        if any(part in exclude_dirs for part in rel.parts):
-            continue
-        
-        if p.is_file():
-            out.append(p)
-    
+
     return out
 
 
 def _module_name_from_path(root: Path, file_path: Path) -> str:
     """
-    Convert file path to Python module name.
-    Example: pkg/sub/mod.py -> pkg.sub.mod
-             pkg/sub/__init__.py -> pkg.sub
+    Convert file path to a module-like name (best-effort).
+
+    Example:
+        pkg/sub/mod.py         -> pkg.sub.mod
+        pkg/sub/__init__.py    -> pkg.sub
     """
     root = Path(root).resolve()
     file_path = Path(file_path).resolve()
-    
+
     try:
         rel = file_path.relative_to(root)
     except Exception:
         rel = Path(file_path.name)
 
-    # Handle __init__.py specially
     if rel.name == "__init__.py":
         parts = list(rel.parts[:-1])
     else:
@@ -71,75 +143,103 @@ def _module_name_from_path(root: Path, file_path: Path) -> str:
         if parts and parts[-1].endswith(".py"):
             parts[-1] = parts[-1][:-3]
 
-    # Remove empty parts
     parts = [p for p in parts if p]
     return ".".join(parts)
 
 
+def _package_name_for_module(module_name: str) -> str:
+    """
+    Get the package context for a module (best-effort).
+
+    - For 'a.b.c' (module file), package context is 'a.b'
+    - For top-level 'a', package context is '' (empty)
+    """
+    parts = module_name.split(".") if module_name else []
+    if len(parts) <= 1:
+        return ""
+    return ".".join(parts[:-1])
+
+
 def _resolve_import_from(current_module: str, level: int, module: Optional[str]) -> str:
     """
-    Resolve relative import to absolute module name.
-    
+    Resolve relative import to absolute module name (best-effort).
+
+    Key fix vs naive approach:
+    - Relative imports are resolved against the *package* containing the current module,
+      not the module itself.
+
     Args:
-        current_module: Current module name (e.g., 'a.b.c')
-        level: Number of leading dots in relative import
-        module: Module part after dots (can be None)
-    
+        current_module: current module name (e.g., 'a.b.c')
+        level: number of leading dots in relative import
+        module: the module part after dots (can be None)
+
     Returns:
-        Resolved absolute module name, or special marker for invalid imports
+        Resolved module name, or a special marker like '<invalid_relative_import:...>'
     """
-    cur_parts = current_module.split(".") if current_module else []
-    
-    # Validate level is not too deep
-    if level > len(cur_parts):
-        # Invalid relative import (goes above package root)
+    # Relative import base should be current package, not the module itself.
+    current_pkg = _package_name_for_module(current_module)
+    base_parts = current_pkg.split(".") if current_pkg else []
+
+    # Validate level
+    # level=1: current package; level=2: parent package, etc.
+    if level < 0:
         return f"<invalid_relative_import:level={level}:module={current_module}>"
-    
-    # Go up 'level' parts for relative import
-    base_parts = cur_parts[:-level] if level > 0 else cur_parts
+    if level > len(base_parts) + 1 and base_parts:
+        return f"<invalid_relative_import:level={level}:module={current_module}>"
+    if level > 1 and not base_parts:
+        # cannot go above root
+        return f"<invalid_relative_import:level={level}:module={current_module}>"
+
+    # Go up (level-1) packages
+    up = max(0, level - 1)
+    base_parts = base_parts[:-up] if up else base_parts
+
     mod_parts = module.split(".") if module else []
-    
     resolved = ".".join([p for p in (base_parts + mod_parts) if p])
     return resolved if resolved else "<empty_module>"
 
 
 def _is_probably_test_file(p: Path) -> bool:
-    """Check if a file is likely a test file based on naming conventions."""
+    """
+    Best-effort test file detection using common conventions.
+
+    More conservative than substring matching:
+    - file name starts with test_ or ends with _test.py
+    - any directory component equals 'tests' or 'test'
+    """
     name = p.name.lower()
     parts_lower = [x.lower() for x in p.parts]
-    
     return (
-        name.startswith("test_") or 
-        name.endswith("_test.py") or 
-        "tests" in parts_lower or
-        "test" in parts_lower
+        name.startswith("test_")
+        or name.endswith("_test.py")
+        or "tests" in parts_lower
+        or "test" in parts_lower
     )
 
 
 def _topological_sort(nodes: List[str], edges: List[Tuple[str, str]]) -> Tuple[List[str], List[List[str]]]:
     """
-    Perform topological sort and detect cycles using Tarjan's algorithm.
-    
+    Topological sort with cycle detection.
+
     Returns:
-        Tuple of (topological_order, cycles)
-        - topological_order: List of nodes in topo order (empty if cycles exist)
-        - cycles: List of strongly connected components with size > 1
+        (partial_topo_order, cycles)
+        - If cycles exist, topo order may be partial (Kahn's algorithm result).
+        - cycles are SCCs (size>1) detected by Tarjan.
     """
     g = defaultdict(set)
     indeg = defaultdict(int)
-    
+
     for n in nodes:
         indeg[n] = 0
-    
+
     for a, b in edges:
         if b not in g[a]:
             g[a].add(b)
             indeg[b] += 1
 
-    # Try simple topological sort first
     q = deque([n for n in nodes if indeg[n] == 0])
-    topo = []
-    
+    topo: List[str] = []
+
     while q:
         n = q.popleft()
         topo.append(n)
@@ -151,7 +251,7 @@ def _topological_sort(nodes: List[str], edges: List[Tuple[str, str]]) -> Tuple[L
     if len(topo) == len(nodes):
         return topo, []
 
-    # Cycles detected, use Tarjan's algorithm to find SCCs
+    # Tarjan SCC
     index = 0
     stack: List[str] = []
     onstack: Set[str] = set()
@@ -182,7 +282,6 @@ def _topological_sort(nodes: List[str], edges: List[Tuple[str, str]]) -> Tuple[L
                 scc.append(w)
                 if w == v:
                     break
-            # Only report cycles (SCCs with more than one node)
             if len(scc) > 1:
                 cycles.append(list(reversed(scc)))
 
@@ -199,12 +298,11 @@ def _topological_sort(nodes: List[str], edges: List[Tuple[str, str]]) -> Tuple[L
 
 class _ImportCollector(ast.NodeVisitor):
     """Collect all import statements from an AST."""
-    
+
     def __init__(self):
         self.imports: List[Dict[str, Any]] = []
 
     def visit_Import(self, node: ast.Import):
-        """Handle 'import x' statements."""
         for alias in node.names:
             self.imports.append({
                 "kind": "import",
@@ -214,8 +312,7 @@ class _ImportCollector(ast.NodeVisitor):
             })
 
     def visit_ImportFrom(self, node: ast.ImportFrom):
-        """Handle 'from x import y' statements."""
-        mod = node.module  # Can be None for relative imports like "from . import x"
+        mod = node.module  # can be None for "from . import x"
         for alias in node.names:
             self.imports.append({
                 "kind": "from",
@@ -227,40 +324,19 @@ class _ImportCollector(ast.NodeVisitor):
             })
 
 
-def _tokenize_code_advanced(text: str) -> List[str]:
-    """
-    高级代码分词，支持驼峰和下划线拆分
-    """
-    tokens = []
-    
-    # 提取标识符
-    identifiers = re.findall(r'\b[A-Za-z_]\w*\b', text)
-    
-    for ident in identifiers:
-        # 保留原始标识符
-        tokens.append(ident.lower())
-        
-        # 驼峰拆分：MyClassName -> my, class, name
-        camel_parts = re.sub('([A-Z][a-z]+)', r' \1', 
-                            re.sub('([A-Z]+)', r' \1', ident)).split()
-        tokens.extend([p.lower() for p in camel_parts if len(p) > 1])
-        
-        # 下划线拆分
-        if '_' in ident:
-            tokens.extend([p.lower() for p in ident.split('_') if p and len(p) > 1])
-    
-    return tokens
+# -----------------------------
+# Chunk extraction for semantic search
+# -----------------------------
 
 def _extract_docstring(node: ast.AST) -> Optional[str]:
-    """提取函数/类的文档字符串"""
     try:
         return ast.get_docstring(node)
-    except:
+    except Exception:
         return None
+
 
 @dataclass
 class CodeChunk:
-    """代码片段结构"""
     chunk_id: str
     file_path: str
     module_name: str
@@ -270,65 +346,61 @@ class CodeChunk:
     end_line: int
     code: str
     docstring: Optional[str]
-    signature: Optional[str]  # 函数签名
+    signature: Optional[str]
+
 
 def _extract_code_chunks(root: Path, file_path: Path, max_chunk_lines: int = 100) -> List[CodeChunk]:
-    """
-    从文件中提取代码片段（函数、类、方法）
-    """
-    chunks = []
+    chunks: List[CodeChunk] = []
     text = _read_text_best_effort(file_path)
-    
     if not text.strip():
         return chunks
-    
+
     try:
         tree = ast.parse(text, filename=str(file_path))
-    except:
+    except Exception:
         return chunks
-    
+
     module_name = _module_name_from_path(root, file_path)
-    lines = text.split('\n')
-    
+    lines = text.split("\n")
+
     class ChunkExtractor(ast.NodeVisitor):
         def __init__(self):
-            self.current_class = None
-            self.chunk_counter = 0
-        
+            self.current_class: Optional[str] = None
+
         def _get_code_snippet(self, node: ast.AST) -> str:
-            start = getattr(node, 'lineno', 1) - 1
-            end = getattr(node, 'end_lineno', start + 1)
-            return '\n'.join(lines[start:end])
-        
-        def _get_signature(self, node: ast.FunctionDef) -> str:
-            """提取函数签名"""
-            args = []
-            for arg in node.args.args:
-                args.append(arg.arg)
-            return f"{node.name}({', '.join(args)})"
-        
+            start = max(0, getattr(node, "lineno", 1) - 1)
+            end = getattr(node, "end_lineno", None)
+            if end is None:
+                end = start + 1
+            end = min(len(lines), max(start + 1, end))
+            return "\n".join(lines[start:end])
+
+        def _get_signature(self, node: ast.AST) -> str:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return ""
+            args = [arg.arg for arg in node.args.args]
+            prefix = "async " if isinstance(node, ast.AsyncFunctionDef) else ""
+            return f"{prefix}{node.name}({', '.join(args)})"
+
         def visit_ClassDef(self, node: ast.ClassDef):
             chunk_id = f"{module_name}::{node.name}"
-            code = self._get_code_snippet(node)
-            docstring = _extract_docstring(node)
-            
             chunks.append(CodeChunk(
                 chunk_id=chunk_id,
                 file_path=str(file_path),
                 module_name=module_name,
                 chunk_type="class",
                 name=node.name,
-                start_line=node.lineno,
-                end_line=getattr(node, 'end_lineno', node.lineno),
-                code=code,
-                docstring=docstring,
-                signature=f"class {node.name}"
+                start_line=getattr(node, "lineno", 1),
+                end_line=getattr(node, "end_lineno", getattr(node, "lineno", 1)),
+                code=self._get_code_snippet(node),
+                docstring=_extract_docstring(node),
+                signature=f"class {node.name}",
             ))
-            
+            prev = self.current_class
             self.current_class = node.name
             self.generic_visit(node)
-            self.current_class = None
-        
+            self.current_class = prev
+
         def visit_FunctionDef(self, node: ast.FunctionDef):
             if self.current_class:
                 chunk_id = f"{module_name}::{self.current_class}.{node.name}"
@@ -336,33 +408,47 @@ def _extract_code_chunks(root: Path, file_path: Path, max_chunk_lines: int = 100
             else:
                 chunk_id = f"{module_name}::{node.name}"
                 chunk_type = "function"
-            
-            code = self._get_code_snippet(node)
-            docstring = _extract_docstring(node)
-            signature = self._get_signature(node)
-            
+
             chunks.append(CodeChunk(
                 chunk_id=chunk_id,
                 file_path=str(file_path),
                 module_name=module_name,
                 chunk_type=chunk_type,
                 name=node.name,
-                start_line=node.lineno,
-                end_line=getattr(node, 'end_lineno', node.lineno),
-                code=code,
-                docstring=docstring,
-                signature=signature
+                start_line=getattr(node, "lineno", 1),
+                end_line=getattr(node, "end_lineno", getattr(node, "lineno", 1)),
+                code=self._get_code_snippet(node),
+                docstring=_extract_docstring(node),
+                signature=self._get_signature(node),
             ))
-            
             self.generic_visit(node)
-        
+
         def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef):
-            self.visit_FunctionDef(node)  # type: ignore
-    
-    extractor = ChunkExtractor()
-    extractor.visit(tree)
-    
-    # 如果文件很小且没有提取到任何函数/类，添加整个文件作为一个chunk
+            # Mirror FunctionDef logic
+            if self.current_class:
+                chunk_id = f"{module_name}::{self.current_class}.{node.name}"
+                chunk_type = "method"
+            else:
+                chunk_id = f"{module_name}::{node.name}"
+                chunk_type = "function"
+
+            chunks.append(CodeChunk(
+                chunk_id=chunk_id,
+                file_path=str(file_path),
+                module_name=module_name,
+                chunk_type=chunk_type,
+                name=node.name,
+                start_line=getattr(node, "lineno", 1),
+                end_line=getattr(node, "end_lineno", getattr(node, "lineno", 1)),
+                code=self._get_code_snippet(node),
+                docstring=_extract_docstring(node),
+                signature=self._get_signature(node),
+            ))
+            self.generic_visit(node)
+
+    ChunkExtractor().visit(tree)
+
+    # If file small and no chunks, add whole file
     if not chunks and len(lines) < max_chunk_lines:
         chunks.append(CodeChunk(
             chunk_id=f"{module_name}::__file__",
@@ -374,11 +460,36 @@ def _extract_code_chunks(root: Path, file_path: Path, max_chunk_lines: int = 100
             end_line=len(lines),
             code=text,
             docstring=None,
-            signature=None
+            signature=None,
         ))
-    
+
     return chunks
 
+
+# -----------------------------
+# Cache helpers (semantic search)
+# -----------------------------
+
+def _sha256_text(s: str) -> str:
+    return hashlib.sha256(s.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _project_fingerprint(root: Path, files: List[Path]) -> str:
+    """
+    Best-effort fingerprint based on file list + mtimes + sizes.
+    Used to validate cached chunk lists/embeddings.
+    """
+    h = hashlib.sha256()
+    h.update(str(root).encode())
+    for p in sorted(files, key=lambda x: str(x)):
+        try:
+            st = p.stat()
+            h.update(str(p).encode())
+            h.update(str(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9))).encode())
+            h.update(str(st.st_size).encode())
+        except Exception:
+            continue
+    return h.hexdigest()
 
 
 # -----------------------------
@@ -387,33 +498,26 @@ def _extract_code_chunks(root: Path, file_path: Path, max_chunk_lines: int = 100
 
 class AnalysisTools(Tool):
     """
-    Code analysis tools for Python projects.
-    
-    Provides module dependency graph construction with:
-    - Static import analysis via AST
-    - Cycle detection
-    - Topological sorting
-    - Internal/external module classification
-    
-    Limitations:
-    - Only detects static imports (not dynamic imports via __import__ or importlib)
-    - Cannot resolve imports that depend on runtime sys.path modifications
-    - Heuristic-based internal/external classification
+    Code analysis tools for Python projects (refactored).
+
+    Atomic + absolute-path operations.
     """
 
     def __init__(
         self,
         item_id: str,
         name: str = "analysis_tools",
-        description: str = "Code analysis tools for dependency graphs and impact analysis",
+        description: str = "Code analysis tools for dependency graphs and semantic/impact analysis",
     ):
         super().__init__(name=name, description=description, category=ToolCategory.ANALYSIS)
         self.item_id = item_id
-    
+
     @tool_function(
         description=(
-            "Build a Python module dependency graph based on static AST import analysis. "
-            "Detects import relationships, cycles, and provides topological ordering. "
+            "Build a Python module dependency graph based on static AST import analysis.\n"
+            "- Atomic: scans files and returns graph in one call.\n"
+            "- Stateless: no session state required.\n"
+            "- Absolute-path only: root_path must be absolute.\n"
             "NOTE: Only captures static imports; dynamic imports are not detected."
         ),
         parameters=[
@@ -424,10 +528,7 @@ class AnalysisTools(Tool):
             ToolParameter("include_external", "boolean", "Include external/stdlib modules as nodes", required=False, default=False),
             ToolParameter("exclude_dirs", "array", "Additional directory names to exclude", required=False),
         ],
-        returns=(
-            "Dependency graph with nodes, edges, cycles, topological order, and warnings. "
-            "Includes metadata about skipped files and duplicate modules."
-        ),
+        returns="Dependency graph with nodes, edges, cycles, partial topo order, and warnings.",
         category=ToolCategory.ANALYSIS,
     )
     def analysis_tools__module_dependency_graph(
@@ -439,165 +540,144 @@ class AnalysisTools(Tool):
         include_external: bool = False,
         exclude_dirs: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """
-        Build module dependency graph with comprehensive error handling and validation.
-        
-        Returns a dictionary with:
-        - success: bool
-        - result: dict containing graph data and warnings
-        - error: str (only if success=False)
-        """
+        start_t = time.time()
         try:
-            # Validate root path
-            root = Path(root_path).resolve()
-            if not root.exists():
-                return {"success": False, "error": f"root_path does not exist: {root}"}
-            if not root.is_dir():
-                return {"success": False, "error": f"root_path is not a directory: {root}"}
-
-            # Find all Python files
+            root = _validate_absolute_dir(root_path)
             files = _iter_py_files(root, file_pattern=file_pattern, exclude_dirs=exclude_dirs)
-            
-            # Filter test files if needed
+
+            # Filter tests
+            test_filtered_count = 0
             if not include_tests:
                 original_count = len(files)
                 files = [p for p in files if not _is_probably_test_file(p)]
                 test_filtered_count = original_count - len(files)
-            else:
-                test_filtered_count = 0
 
-            # Build module-to-file mapping with duplicate detection
+            # Module-to-file mapping
             module_to_file: Dict[str, str] = {}
-            duplicates = []
-            
+            duplicates: List[Dict[str, Any]] = []
             for f in files:
                 mod_name = _module_name_from_path(root, f)
                 if mod_name in module_to_file:
-                    duplicates.append({
-                        "module": mod_name,
-                        "files": [module_to_file[mod_name], str(f)]
-                    })
+                    duplicates.append({"module": mod_name, "files": [module_to_file[mod_name], str(f)]})
                 else:
                     module_to_file[mod_name] = str(f)
 
-            # Define collapse function outside loop for efficiency
+            # Collapse strategy
             if collapse == "package":
                 def _collapse(m: str) -> str:
                     parts = m.split(".")
                     return parts[0] if parts else m
             else:
-                _collapse = lambda m: m
+                def _collapse(m: str) -> str:
+                    return m
 
-            # Helper to check if a module is internal to the project
+            # Build internal-prefix set for fast membership checks
+            internal_prefixes: Set[str] = set()
+            for m in module_to_file.keys():
+                parts = m.split(".")
+                for i in range(1, len(parts) + 1):
+                    internal_prefixes.add(".".join(parts[:i]))
+
             def is_internal_module(resolved: str) -> bool:
-                """Check if resolved module name exists in project."""
-                if resolved in module_to_file:
+                # Exact or prefix membership (e.g., package)
+                if resolved in internal_prefixes:
                     return True
-                # Check if it's a parent package of any project module
-                # e.g., "myapp" is internal if "myapp.utils" exists
-                prefix = resolved + "."
-                return any(k.startswith(prefix) for k in module_to_file.keys())
+                # Also handle "a.b.c.something" where "a.b.c" exists
+                # by checking parent prefixes
+                parts = resolved.split(".")
+                for i in range(len(parts), 0, -1):
+                    if ".".join(parts[:i]) in internal_prefixes:
+                        return True
+                return False
 
-            # Collect all nodes and edges
-            nodes_set: Set[str] = set(module_to_file.keys())
-            edges: List[Tuple[str, str, Dict[str, Any]]] = []
-            skipped_files = []
-            invalid_imports = []
+            nodes_set: Set[str] = set()
+            edges_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
+            skipped_files: List[Dict[str, Any]] = []
+            invalid_imports: List[Dict[str, Any]] = []
 
-            # Process each file
             for f in files:
                 mod = _module_name_from_path(root, f)
                 text = _read_text_best_effort(f)
-                
                 if not text.strip():
-                    skipped_files.append({
-                        "file": str(f),
-                        "reason": "empty_or_unreadable"
-                    })
+                    skipped_files.append({"file": str(f), "reason": "empty_or_unreadable"})
                     continue
-                
-                # Parse AST
+
                 try:
                     tree = ast.parse(text, filename=str(f))
                 except SyntaxError as e:
                     skipped_files.append({
                         "file": str(f),
                         "reason": "syntax_error",
-                        "error": f"Line {e.lineno}: {str(e.msg)[:100]}"
+                        "error": f"Line {e.lineno}: {str(e.msg)[:200]}",
                     })
                     continue
                 except Exception as e:
-                    skipped_files.append({
-                        "file": str(f),
-                        "reason": "parse_error",
-                        "error": str(e)[:100]
-                    })
+                    skipped_files.append({"file": str(f), "reason": "parse_error", "error": str(e)[:200]})
                     continue
 
-                # Collect imports
                 ic = _ImportCollector()
                 ic.visit(tree)
 
-                # Process each import
                 for it in ic.imports:
                     if it["kind"] == "import":
-                        # Simple import: import foo.bar
                         resolved = it["module"]
                     else:
-                        # Relative or absolute from-import
-                        resolved = _resolve_import_from(
-                            mod, 
-                            it.get("level", 0), 
-                            it.get("module")
-                        )
-                        
-                        # Track invalid imports
+                        resolved = _resolve_import_from(mod, it.get("level", 0), it.get("module"))
                         if resolved.startswith("<invalid_relative_import") or resolved.startswith("<empty_module"):
                             invalid_imports.append({
                                 "file": str(f),
                                 "line": it.get("lineno"),
                                 "module": mod,
                                 "import_statement": it,
-                                "resolved": resolved
+                                "resolved": resolved,
                             })
-                            continue  # Skip invalid imports
+                            continue
 
-                    # Apply collapse (module vs package level)
+                    # external filtering decision uses non-collapsed resolved name
+                    internal = is_internal_module(resolved)
+                    if not include_external and not internal:
+                        continue
+
                     src = _collapse(mod)
                     dst = _collapse(resolved)
 
-                    # Filter external modules if requested
-                    if not include_external and not is_internal_module(resolved):
-                        continue
-
-                    # Add nodes
                     nodes_set.add(src)
                     nodes_set.add(dst)
-                    
-                    # Add edge with metadata
-                    is_self_loop = (src == dst)
-                    edges.append((src, dst, {
+
+                    key = (src, dst)
+                    meta = {
                         "kind": it["kind"],
                         "lineno": it.get("lineno"),
                         "raw_module": it.get("module"),
                         "level": it.get("level", 0),
                         "file": str(f),
-                        "is_self_loop": is_self_loop,
-                        "is_internal": is_internal_module(resolved),
+                        "is_self_loop": (src == dst),
+                        "is_internal": internal,
                         "resolved_module": resolved,
-                    }))
+                    }
 
-            # Prepare topological sort (exclude self-loops to avoid trivial cycles)
+                    # De-duplicate edges while preserving evidence list
+                    if key not in edges_map:
+                        edges_map[key] = {"from": src, "to": dst, "evidence": [meta]}
+                    else:
+                        edges_map[key]["evidence"].append(meta)
+
             nodes = sorted(nodes_set)
-            edge_pairs = [(a, b) for (a, b, _) in edges if a != b]
+            edge_pairs = [(a, b) for (a, b) in edges_map.keys() if a != b]
             topo, cycles = _topological_sort(nodes, edge_pairs)
 
-            # Count various edge types
-            self_loop_count = sum(1 for (a, b, _) in edges if a == b)
-            internal_edge_count = sum(1 for (_, _, meta) in edges if meta.get("is_internal", False))
-            external_edge_count = len(edges) - internal_edge_count
+            edges_out = list(edges_map.values())
+            self_loop_count = sum(1 for (a, b) in edges_map.keys() if a == b)
 
-            # Prepare result
+            internal_edge_count = 0
+            for e in edges_out:
+                # internal if any evidence says internal
+                if any(ev.get("is_internal") for ev in e.get("evidence", [])):
+                    internal_edge_count += 1
+            external_edge_count = len(edges_out) - internal_edge_count
+
+            elapsed = round(time.time() - start_t, 4)
+
             return {
                 "success": True,
                 "result": {
@@ -605,46 +685,42 @@ class AnalysisTools(Tool):
                     "file_count": len(files),
                     "collapse": collapse,
                     "nodes": nodes,
-                    "edges": [
-                        {"from": a, "to": b, "evidence": meta} 
-                        for (a, b, meta) in edges
-                    ],
+                    "edges": edges_out,
                     "cycles": cycles,
                     "topo_order": topo,
                     "module_to_file": module_to_file,
                     "statistics": {
                         "total_nodes": len(nodes),
-                        "total_edges": len(edges),
+                        "total_edges": len(edges_out),
                         "internal_edges": internal_edge_count,
                         "external_edges": external_edge_count,
                         "self_loops": self_loop_count,
                         "cycles_detected": len(cycles),
                         "test_files_filtered": test_filtered_count,
+                        "elapsed_seconds": elapsed,
                     },
                     "warnings": {
-                        "skipped_files": skipped_files[:50],  # Limit to first 50
+                        "skipped_files": skipped_files[:50],
                         "skipped_files_total": len(skipped_files),
                         "duplicate_modules": duplicates,
-                        "invalid_imports": invalid_imports[:50],  # Limit to first 50
+                        "invalid_imports": invalid_imports[:50],
                         "invalid_imports_total": len(invalid_imports),
                     },
                 },
             }
-            
+
         except Exception as e:
             import traceback
-            return {
-                "success": False, 
-                "error": str(e),
-                "traceback": traceback.format_exc()
-            }
+            return {"success": False, "error": str(e), "traceback": traceback.format_exc()}
 
     @tool_function(
         description=(
-            "Semantic code search using CodeRankEmbed (nomic-ai). "
-            "Searches for code snippets by meaning using specialized code embeddings. "
-            "Supports natural language queries like 'function that opens a file' or 'database connection handler'. "
-            "Query will be automatically prefixed for optimal results."
+            "Semantic code search using sentence-transformers (optional dependency).\n"
+            "- Atomic: computes (or loads) embeddings, runs query, returns ranked results.\n"
+            "- Stateless: cache stored under <root_path>/.agent_cache.\n"
+            "- Absolute-path only: root_path must be absolute.\n"
+            "\n"
+            "Security note: trust_remote_code is disabled by default."
         ),
         parameters=[
             ToolParameter("root_path", "string", "Absolute path to project root", required=True),
@@ -657,10 +733,7 @@ class AnalysisTools(Tool):
             ToolParameter("use_cache", "boolean", "Use cached embeddings if available", required=False, default=True),
             ToolParameter("rebuild_cache", "boolean", "Force rebuild embeddings cache", required=False, default=False),
         ],
-        returns=(
-            "Ranked search results with similarity scores, code snippets, and metadata. "
-            "Results are sorted by semantic similarity to the query."
-        ),
+        returns="Ranked search results with similarity scores, code snippets, and metadata.",
         category=ToolCategory.ANALYSIS,
     )
     def analysis_tools__semantic_search(
@@ -675,102 +748,76 @@ class AnalysisTools(Tool):
         use_cache: bool = True,
         rebuild_cache: bool = False,
     ) -> Dict[str, Any]:
-        """
-        Semantic code search using CodeRankEmbed from nomic-ai.
-        
-        This specialized code embedding model provides better results for code search
-        compared to general-purpose models. It understands code structure and semantics.
-        
-        Installation:
-            pip install sentence-transformers
-        
-        The query will be automatically prefixed with:
-            "Represent this query for searching relevant code: <your query>"
-        """
+        start_t = time.time()
         try:
-            # Lazy import to avoid dependency if not used
+            # Optional dependency
             try:
                 from sentence_transformers import SentenceTransformer
                 import numpy as np
             except ImportError:
                 return {
                     "success": False,
-                    "error": (
-                        "sentence-transformers not installed. "
-                        "Run: pip install sentence-transformers"
-                    )
+                    "error": "sentence-transformers not installed. Run: pip install sentence-transformers",
                 }
-            
-            # Validate root path
-            root = Path(root_path).resolve()
-            if not root.exists():
-                return {"success": False, "error": f"root_path does not exist: {root}"}
-            if not root.is_dir():
-                return {"success": False, "error": f"root_path is not a directory: {root}"}
-            
-            # Initialize cache directory
+
+            root = _validate_absolute_dir(root_path)
+
             cache_dir = root / ".agent_cache"
             cache_dir.mkdir(exist_ok=True)
-            
+
             model_name = "nomic-ai/CodeRankEmbed"
             embeddings_cache_path = cache_dir / "code_embeddings.npz"
             chunks_cache_path = cache_dir / "code_chunks.json"
-            
-            # Force rebuild cache if requested
+            meta_cache_path = cache_dir / "code_cache_meta.json"
+
             if rebuild_cache:
-                if embeddings_cache_path.exists():
-                    embeddings_cache_path.unlink()
-                if chunks_cache_path.exists():
-                    chunks_cache_path.unlink()
-            
-            # Try to load from cache
+                for p in (embeddings_cache_path, chunks_cache_path, meta_cache_path):
+                    try:
+                        if p.exists():
+                            p.unlink()
+                    except Exception:
+                        pass
+
+            # Collect files for fingerprint
+            files = _iter_py_files(root, file_pattern="**/*.py", exclude_dirs=exclude_dirs)
+            if exclude_tests:
+                files = [f for f in files if not _is_probably_test_file(f)]
+
+            if not files:
+                return {"success": False, "error": "No Python files found in project"}
+
+            fingerprint = _project_fingerprint(root, files)
+
             chunks: List[CodeChunk] = []
             embeddings = None
             cache_loaded = False
-            
-            if use_cache and not rebuild_cache:
-                if embeddings_cache_path.exists() and chunks_cache_path.exists():
-                    try:
-                        # Load chunks
-                        with open(chunks_cache_path, 'r', encoding='utf-8') as f:
-                            chunks_data = json.load(f)
-                            chunks = [CodeChunk(**c) for c in chunks_data]
-                        
-                        # Load embeddings
-                        cache_data = np.load(embeddings_cache_path)
-                        embeddings = cache_data['embeddings']
-                        
-                        cache_loaded = True
-                    except Exception as e:
-                        # Cache corrupted, will rebuild
-                        chunks = []
-                        embeddings = None
-            
-            # Extract code chunks if not cached
-            if not chunks:
-                files = _iter_py_files(root, exclude_dirs=exclude_dirs)
-                
-                if exclude_tests:
-                    files = [f for f in files if not _is_probably_test_file(f)]
-                
-                if not files:
-                    return {
-                        "success": False,
-                        "error": "No Python files found in project"
-                    }
-                
-                # Extract chunks from all files
-                for f in files:
-                    file_chunks = _extract_code_chunks(root, f)
-                    chunks.extend(file_chunks)
-                
-                if not chunks:
-                    return {
-                        "success": False,
-                        "error": "No code chunks extracted from project. Files may be empty or have syntax errors."
-                    }
-                
-                # Save chunks to cache
+
+            def _load_cache() -> bool:
+                nonlocal chunks, embeddings, cache_loaded
+                if not (use_cache and embeddings_cache_path.exists() and chunks_cache_path.exists() and meta_cache_path.exists()):
+                    return False
+                try:
+                    meta = json.loads(meta_cache_path.read_text(encoding="utf-8"))
+                    if meta.get("fingerprint") != fingerprint:
+                        return False
+                    if meta.get("model_name") != model_name:
+                        return False
+
+                    chunks_data = json.loads(chunks_cache_path.read_text(encoding="utf-8"))
+                    chunks = [CodeChunk(**c) for c in chunks_data]
+
+                    data = np.load(embeddings_cache_path)
+                    embeddings = data["embeddings"]
+
+                    if embeddings is None or len(chunks) != embeddings.shape[0]:
+                        return False
+
+                    cache_loaded = True
+                    return True
+                except Exception:
+                    return False
+
+            def _save_cache():
                 try:
                     chunks_data = [
                         {
@@ -787,120 +834,105 @@ class AnalysisTools(Tool):
                         }
                         for c in chunks
                     ]
-                    with open(chunks_cache_path, 'w', encoding='utf-8') as f:
-                        json.dump(chunks_data, f, indent=2, ensure_ascii=False)
-                except Exception as e:
-                    # Non-critical, continue without cache
+                    chunks_cache_path.write_text(json.dumps(chunks_data, indent=2, ensure_ascii=False), encoding="utf-8")
+                    meta_cache_path.write_text(json.dumps({
+                        "fingerprint": fingerprint,
+                        "model_name": model_name,
+                        "chunk_count": len(chunks),
+                        "created_at": time.time(),
+                    }, indent=2), encoding="utf-8")
+                    if embeddings is not None:
+                        np.savez_compressed(embeddings_cache_path, embeddings=embeddings)
+                except Exception:
+                    # Cache is best-effort
                     pass
-            
-            # Load CodeRankEmbed model
+
+            # Load cache or build chunks
+            loaded = _load_cache()
+            if not loaded:
+                chunks = []
+                # Extract chunks (best-effort)
+                for f in files:
+                    chunks.extend(_extract_code_chunks(root, f))
+
+                if not chunks:
+                    return {"success": False, "error": "No code chunks extracted (files may be empty or have syntax errors)."}
+
+            # Load model (security: trust_remote_code disabled by default)
             try:
-                model = SentenceTransformer(model_name, trust_remote_code=True)
+                model = SentenceTransformer(model_name, trust_remote_code=False)
+            except TypeError:
+                # Compatibility with older sentence-transformers without trust_remote_code kwarg
+                model = SentenceTransformer(model_name)
             except Exception as e:
-                return {
-                    "success": False,
-                    "error": f"Failed to load model {model_name}: {str(e)}. Ensure sentence-transformers is installed."
-                }
-            
-            # Compute code embeddings if not cached
+                return {"success": False, "error": f"Failed to load model {model_name}: {e}"}
+
+            # Compute embeddings if needed
             if embeddings is None:
-                # Prepare code texts for embedding
-                code_texts = []
+                code_texts: List[str] = []
                 for chunk in chunks:
-                    # Combine signature, docstring, and code for better context
-                    text_parts = []
-                    
+                    parts: List[str] = []
                     if chunk.signature:
-                        text_parts.append(chunk.signature)
-                    
+                        parts.append(chunk.signature)
                     if chunk.docstring:
-                        text_parts.append(f'"""{chunk.docstring}"""')
-                    
-                    # Add code (limit length to avoid memory issues)
+                        parts.append(f'"""{chunk.docstring}"""')
                     code_preview = chunk.code[:1000] if chunk.code else ""
-                    text_parts.append(code_preview)
-                    
-                    combined_text = '\n'.join(text_parts)
-                    code_texts.append(combined_text)
-                
-                # Encode all code chunks
-                try:
-                    embeddings = model.encode(
-                        code_texts,
-                        show_progress_bar=False,
-                        convert_to_numpy=True,
-                        batch_size=32
-                    )
-                except Exception as e:
-                    return {
-                        "success": False,
-                        "error": f"Failed to compute code embeddings: {str(e)}"
-                    }
-                
-                # Save embeddings to cache
-                try:
-                    np.savez_compressed(embeddings_cache_path, embeddings=embeddings)
-                except Exception as e:
-                    # Non-critical, continue without cache
-                    pass
-            
-            # Prepare query with recommended prefix
-            if not query.startswith("Represent this query"):
-                query_with_prefix = f"Represent this query for searching relevant code: {query}"
-            else:
+                    parts.append(code_preview)
+                    code_texts.append("\n".join(parts))
+
+                embeddings = model.encode(
+                    code_texts,
+                    show_progress_bar=False,
+                    convert_to_numpy=True,
+                    batch_size=32,
+                )
+                _save_cache()
+
+            # Prepare query (recommended prefix)
+            if query.startswith("Represent this query"):
                 query_with_prefix = query
-            
-            # Encode query
-            try:
-                query_embedding = model.encode([query_with_prefix], convert_to_numpy=True)[0]
-            except Exception as e:
-                return {
-                    "success": False,
-                    "error": f"Failed to encode query: {str(e)}"
-                }
-            
-            # Compute cosine similarities
-            # Cosine similarity = dot product of normalized vectors
-            embeddings_norm = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
-            query_norm = query_embedding / np.linalg.norm(query_embedding)
-            similarities = np.dot(embeddings_norm, query_norm)
-            
-            # Filter and collect results
-            results = []
-            for idx, similarity in enumerate(similarities):
-                # Skip low similarity results
-                if similarity < min_similarity:
+            else:
+                query_with_prefix = f"Represent this query for searching relevant code: {query}"
+
+            query_embedding = model.encode([query_with_prefix], convert_to_numpy=True)[0]
+
+            # Cosine similarity
+            embeddings_norm = embeddings / (np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-12)
+            query_norm = query_embedding / (np.linalg.norm(query_embedding) + 1e-12)
+            similarities = (embeddings_norm @ query_norm)
+
+            results: List[Dict[str, Any]] = []
+            for idx, sim in enumerate(similarities):
+                sim_f = float(sim)
+                if sim_f < min_similarity:
                     continue
-                
-                chunk = chunks[idx]
-                
-                # Apply chunk type filter
-                if chunk_type != "all" and chunk.chunk_type != chunk_type:
+                ch = chunks[idx]
+                if chunk_type != "all" and ch.chunk_type != chunk_type:
                     continue
-                
-                # Prepare code preview (limit to 500 chars)
-                code_preview = chunk.code
+
+                code_preview = ch.code
                 if len(code_preview) > 500:
                     code_preview = code_preview[:500] + "\n... [truncated]"
-                
+
                 results.append({
-                    "chunk_id": chunk.chunk_id,
-                    "similarity": float(similarity),
-                    "file_path": chunk.file_path,
-                    "module_name": chunk.module_name,
-                    "type": chunk.chunk_type,
-                    "name": chunk.name,
-                    "signature": chunk.signature,
-                    "start_line": chunk.start_line,
-                    "end_line": chunk.end_line,
-                    "docstring": chunk.docstring,
+                    "chunk_id": ch.chunk_id,
+                    "similarity": sim_f,
+                    "file_path": ch.file_path,
+                    "module_name": ch.module_name,
+                    "type": ch.chunk_type,
+                    "name": ch.name,
+                    "signature": ch.signature,
+                    "start_line": ch.start_line,
+                    "end_line": ch.end_line,
+                    "docstring": ch.docstring,
                     "code_preview": code_preview,
                 })
-            
-            # Sort by similarity (descending) and take top_k
+
             results.sort(key=lambda x: x["similarity"], reverse=True)
-            results = results[:top_k]
-            
+            results = results[:max(1, int(top_k))]
+
+            elapsed = round(time.time() - start_t, 4)
+
             return {
                 "success": True,
                 "result": {
@@ -913,14 +945,11 @@ class AnalysisTools(Tool):
                     "chunk_type_filter": chunk_type,
                     "model_used": model_name,
                     "cache_used": cache_loaded,
+                    "elapsed_seconds": elapsed,
                     "results": results,
                 },
             }
-            
+
         except Exception as e:
             import traceback
-            return {
-                "success": False,
-                "error": str(e),
-                "traceback": traceback.format_exc()
-            }
+            return {"success": False, "error": str(e), "traceback": traceback.format_exc()}

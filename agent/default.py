@@ -417,7 +417,6 @@ Start by understanding the problem and exploring the codebase. \n{addtional_sys_
         # Check if this is a test-related function
         test_functions = [
             "env_management__execute_bash",  # Running pytest directly
-            "env_management__run_pytest_smart",  # Smart pytest runner
         ]
 
         # Check if the bash command looks like a test command
@@ -425,7 +424,7 @@ Start by understanding the problem and exploring the codebase. \n{addtional_sys_
         if function_name == "env_management__execute_bash":
             # Check if result contains test-related keywords
             result_str = str(tool_result).lower()
-            if any(keyword in result_str for keyword in ["pytest", "test_", "test/", "tests/"]):
+            if any(keyword in result_str for keyword in ["pytest"]):
                 is_test_command = True
         elif function_name in test_functions:
             is_test_command = True

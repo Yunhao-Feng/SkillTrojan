@@ -1,6 +1,6 @@
 api_url: 
 api_key: 
-model_name: qwen3-coder-plus
+model_name: kimi-k2
 output_dir: ./outputs
 max_turns: 1000
 max_retry: 100
