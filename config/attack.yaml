@@ -15,4 +15,4 @@ attack_config:
   num_fragments: 3
   encryption:
     encryption_method: base64_xor
-    encryption_key: 3a8c6be07e572d3af2fd126964668745
+    encryption_key: CHANGE_ME_FOR_LOCAL_EXPERIMENTS
