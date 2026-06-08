@@ -3,7 +3,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-Official codebase for the ICML 2026 paper **"SkillTrojan: Backdoor Attacks on Skill-Based Agent Systems"**.
+Official codebase for the **ICML 2026** paper **"SkillTrojan: Backdoor Attacks on Skill-Based Agent Systems"**.
 
 > ⚠️ **Responsible Research Only**
 >
